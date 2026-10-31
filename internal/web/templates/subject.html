@@ -1,0 +1,38 @@
+{{define "content"}}
+{{$d := .Data}}
+<p class="crumbs"><a href="/">Overview</a> / {{$d.Subject.Kind}}</p>
+<div class="title-row">
+  <div>
+    <h1 class="mono-title">{{$d.Subject.Path}}</h1>
+    <p class="lede">{{if $d.Subject.Description}}{{$d.Subject.Description}}{{else}}No description yet.{{end}}</p>
+  </div>
+  <a class="button primary" href="/remember?subject={{q $d.Subject.Path}}">Remember here</a>
+</div>
+
+{{if or $d.Subject.Aliases $d.Remotes $d.Children}}
+<dl class="kv">
+  {{if $d.Subject.Aliases}}<div><dt>Also called</dt><dd>{{join $d.Subject.Aliases ", "}}</dd></div>{{end}}
+  {{if $d.Remotes}}<div><dt>Repos</dt><dd>{{range $d.Remotes}}<code>{{.}}</code> {{end}}</dd></div>{{end}}
+  {{if $d.Children}}<div><dt>Inside</dt><dd>{{range $d.Children}}<a href="/s/{{.}}">{{.}}</a> {{end}}</dd></div>{{end}}
+</dl>
+{{end}}
+
+<nav class="tabs" aria-label="Status">
+  <a href="/s/{{$d.Subject.Path}}"{{if eq $d.Status ""}} aria-current="page"{{end}}>Active <span class="n">{{$d.Subject.Active}}</span></a>
+  <a href="/s/{{$d.Subject.Path}}?status=all"{{if eq $d.Status "all"}} aria-current="page"{{end}}>With history</a>
+</nav>
+
+{{if $d.Outline}}
+<div class="toolbar">
+  <span class="muted">Paths</span>
+  {{range $d.Outline}}{{if eq .Name "(no path)"}}<span class="chip plain">no path <span>{{.Count}}</span></span>{{else}}<a class="chip" href="/search?subject={{q $d.Subject.Path}}&amp;path={{q .Name}}">{{.Name}} <span>{{.Count}}</span></a>{{end}}{{end}}
+</div>
+{{end}}
+
+<table class="rows">
+  {{template "head"}}
+  <tbody>
+  {{range $d.Results}}{{template "row" .}}{{else}}<tr><td colspan="4" class="empty">No phials in this subject{{if eq $d.Status ""}} that are active{{end}}.</td></tr>{{end}}
+  </tbody>
+</table>
+{{end}}

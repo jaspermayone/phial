@@ -1,0 +1,17 @@
+{{define "content"}}
+<section class="login">
+  <img src="/static/phial.svg" alt="" width="40" height="40">
+  <h1>Sign in to phial</h1>
+  <p class="lede">Use the server token. It is the value of <code>PHIAL_TOKEN</code> on the server.</p>
+  {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+  <form method="post" action="/login" class="form">
+    <input type="hidden" name="next" value="{{.Data}}">
+    <input type="text" name="username" value="phial" autocomplete="username" hidden>
+    <div class="field">
+      <label for="token">Token</label>
+      <input id="token" name="token" type="password" autocomplete="current-password" required autofocus>
+    </div>
+    <button type="submit" class="button primary wide">Sign in</button>
+  </form>
+</section>
+{{end}}

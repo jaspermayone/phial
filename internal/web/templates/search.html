@@ -1,0 +1,43 @@
+{{define "content"}}
+{{$q := .Data.Q}}
+<div class="title-row">
+  <div>
+    <h1>Search</h1>
+    <p class="lede">{{len .Data.Results}} {{if eq (len .Data.Results) 1}}phial{{else}}phials{{end}}{{if $q.Text}} for “{{$q.Text}}”{{end}}, best first. The level is relevance × freshness × trust.</p>
+  </div>
+</div>
+<form class="filters" method="get" action="/search">
+  <label class="sr" for="fq">Words</label><input id="fq" type="search" name="q" value="{{$q.Text}}" placeholder="Words">
+  <label class="sr" for="fs">Subject</label><input id="fs" name="subject" value="{{$q.Subject}}" placeholder="Subject">
+  <label class="sr" for="fp">Path</label><input id="fp" name="path" value="{{$q.PathPrefix}}" placeholder="Path prefix">
+  <label class="sr" for="fk">Kind</label>
+  <select id="fk" name="kind">
+    <option value="">Any kind</option>
+    {{range kinds}}<option value="{{.}}"{{if eq . $q.Kind}} selected{{end}}>{{.}}</option>{{end}}
+  </select>
+  <label class="sr" for="fst">Status</label>
+  <select id="fst" name="status">
+    <option value="">Active</option>
+    <option value="all"{{if eq $q.Status "all"}} selected{{end}}>With history</option>
+    <option value="superseded"{{if eq $q.Status "superseded"}} selected{{end}}>Superseded</option>
+    <option value="retracted"{{if eq $q.Status "retracted"}} selected{{end}}>Retracted</option>
+  </select>
+  <button type="submit" class="button">Search</button>
+</form>
+<table class="rows">
+  <thead><tr><th scope="col">Phial</th><th scope="col">Subject</th><th scope="col"><span class="sr">Check</span></th><th scope="col" class="num">Confirmed</th><th scope="col" class="num">Level</th></tr></thead>
+  <tbody>
+  {{range .Data.Results}}
+  <tr class="st-{{.Status}}">
+    <td class="what"><a href="/p/{{.ID}}">{{.Text}}</a><span class="sub"><span class="kind">{{.Kind}}</span>{{range .Paths}} · {{.}}{{end}}{{if ne .Status "active"}} · <span class="state">{{.Status}}</span>{{end}}</span></td>
+    <td class="id"><a href="/s/{{.Subject}}">{{.Subject}}</a></td>
+    <td class="flag">{{if warn .VerifyState}}<span class="pill warn">{{.VerifyState}}</span>{{end}}</td>
+    <td class="num when">{{age .LastConfirmed}}</td>
+    <td class="num level">{{if eq .Status "active"}}{{template "level" .Rank}}{{else}}<span class="dash">-</span>{{end}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="5" class="empty">No phials match. Try fewer words, or drop a filter.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}

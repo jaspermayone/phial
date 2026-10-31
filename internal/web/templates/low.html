@@ -1,0 +1,14 @@
+{{define "content"}}
+<div class="title-row">
+  <div>
+    <h1>Needs attention</h1>
+    <p class="lede">{{.Data.Total}} active {{if eq .Data.Total 1}}phial is{{else}}phials are{{end}} under half their level or failed a code check. Open one to confirm it, rewrite it or retract it.</p>
+  </div>
+</div>
+<table class="rows">
+  {{template "head"}}
+  <tbody>
+  {{range .Data.Results}}{{template "row" .}}{{else}}<tr><td colspan="4" class="empty">Nothing needs a look. Every active phial is above half its level.</td></tr>{{end}}
+  </tbody>
+</table>
+{{end}}
