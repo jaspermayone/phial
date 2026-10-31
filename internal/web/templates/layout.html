@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · phial</title>
+<link rel="preload" href="/static/fonts/ibm-plex-sans-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="/static/phial.svg" type="image/svg+xml">
+</head>
+<body{{if not .CSRF}} class="bare"{{end}}>
+{{if .CSRF}}
+<div class="app">
+  <aside class="side" aria-label="Navigation">
+    {{template "nav" .}}
+  </aside>
+
+  <header class="bar">
+    <details class="menu">
+      <summary aria-label="Menu">Menu</summary>
+      <div class="menu-sheet">{{template "nav" .}}</div>
+    </details>
+    <a class="bar-mark" href="/"><img src="/static/phial.svg" alt="" width="20" height="20">phial</a>
+    <form class="search" action="/search" method="get" role="search">
+      <input type="search" name="q" value="{{.Query}}" placeholder="Search phials" aria-label="Search phials">
+    </form>
+    {{if .AuthOn}}
+    <form method="post" action="/logout" class="signout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="text" type="submit">Sign out</button></form>
+    {{end}}
+  </header>
+
+  <main class="sheet" id="main">
+    {{if .Flash}}<p class="flash" role="status">{{.Flash}}</p>{{end}}
+    {{block "content" .}}{{end}}
+  </main>
+</div>
+{{else}}
+<main class="lone">{{block "content" .}}{{end}}</main>
+{{end}}
+</body>
+</html>
+
+{{define "nav"}}
+<a class="mark" href="/"><img src="/static/phial.svg" alt="" width="22" height="22"><span>phial</span></a>
+<p class="scope">Your memory</p>
+<nav class="nav-main">
+  <a href="/"{{if eq .Nav "overview"}} aria-current="page"{{end}}>Overview</a>
+  <a href="/search"{{if eq .Nav "search"}} aria-current="page"{{end}}>Search</a>
+  <a href="/low"{{if eq .Nav "attention"}} aria-current="page"{{end}}>Needs attention{{if .Attn}} <span class="count">{{.Attn}}</span>{{end}}</a>
+  <a href="/remember{{if .Subject}}?subject={{q .Subject}}{{end}}"{{if eq .Nav "remember"}} aria-current="page"{{end}}>Remember</a>
+</nav>
+{{$cur := .Subject}}
+{{range .Groups}}
+<p class="nav-group">{{.Kind}}</p>
+<nav class="nav-subjects" aria-label="{{.Kind}}">
+  {{range .Subjects}}<a href="/s/{{.Path}}"{{if eq .Path $cur}} aria-current="page"{{end}}><span>{{short .Path}}</span><span class="n">{{.Active}}</span></a>{{end}}
+</nav>
+{{end}}
+{{end}}
+
+{{/* One phial as a table row. The level is the phial's score drawn as
+     how full the phial is: the product's own measure of what to trust. */}}
+{{define "row"}}
+<tr class="st-{{.Status}}">
+  <td class="what">
+    <a href="/p/{{.ID}}">{{.Text}}</a>
+    <span class="sub">
+      <span class="kind">{{.Kind}}</span>{{range .Paths}} · {{.}}{{end}}{{if ne .Status "active"}} · <span class="state">{{.Status}}</span>{{end}}
+    </span>
+  </td>
+  <td class="flag">{{if warn .VerifyState}}<span class="pill warn">{{.VerifyState}}</span>{{else if and (eq .Status "active") (lt .Rank.Score 0.5)}}<span class="pill low">low</span>{{end}}</td>
+  <td class="num when">{{age .LastConfirmed}}</td>
+  <td class="num level">{{if eq .Status "active"}}{{template "level" .Rank}}{{else}}<span class="dash" title="Only active phials have a level">-</span>{{end}}</td>
+</tr>
+{{end}}
+
+{{define "level"}}
+<span class="lvl" title="score {{score .Score}} = relevance {{score .Relevance}} × freshness {{score .Freshness}} × trust {{score .Trust}}">
+  <svg width="40" height="8" viewBox="0 0 40 8" aria-hidden="true"><rect class="lvl-track" width="40" height="8" rx="4"/><rect class="lvl-fill" width="{{lvl .Score 40}}" height="8" rx="4"/></svg>
+  <span>{{score .Score}}</span>
+</span>
+{{end}}
+
+{{define "head"}}
+<thead><tr><th scope="col">Phial</th><th scope="col"><span class="sr">Check</span></th><th scope="col" class="num">Confirmed</th><th scope="col" class="num">Level</th></tr></thead>
+{{end}}
+
+{{define "kindselect"}}
+<select name="kind" id="kind">
+  {{$cur := .}}
+  {{range kinds}}<option value="{{.}}"{{if eq . $cur}} selected{{end}}>{{.}}</option>{{end}}
+</select>
+{{end}}

@@ -1,0 +1,53 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="title-row">
+  <div>
+    <h1>Overview</h1>
+    <p class="lede">
+      {{$d.Stats.Active}} active {{if eq $d.Stats.Active 1}}phial{{else}}phials{{end}} in {{$d.Stats.Subjects}} {{if eq $d.Stats.Subjects 1}}subject{{else}}subjects{{end}}.
+      {{if $d.AttnTotal}}{{$d.AttnTotal}} {{if eq $d.AttnTotal 1}}needs{{else}}need{{end}} a look: confirm, rewrite or retract {{if eq $d.AttnTotal 1}}it{{else}}them{{end}}.{{else}}Nothing needs a look.{{end}}
+    </p>
+  </div>
+  <a class="button primary" href="/remember">Remember</a>
+</div>
+
+<dl class="strip">
+  <div><dt>Active</dt><dd class="num">{{$d.Stats.Active}}</dd></div>
+  <div><dt>Needs attention</dt><dd class="num">{{$d.AttnTotal}}</dd></div>
+  <div><dt>Superseded</dt><dd class="num">{{$d.Stats.Superseded}}</dd></div>
+  <div><dt>Retracted</dt><dd class="num">{{$d.Stats.Retracted}}</dd></div>
+</dl>
+
+<div class="pair">
+  <section class="panel">
+    <header class="panel-head"><h2>Lowest level</h2><a href="/low">{{if $d.AttnTotal}}{{$d.AttnTotal}} need a look{{else}}Needs attention{{end}}</a></header>
+    {{if $d.Lowest}}
+    <table class="rows compact">{{range $d.Lowest}}{{template "row" .}}{{end}}</table>
+    {{else}}
+    <p class="empty">No active phials yet.</p>
+    {{end}}
+  </section>
+  <section class="panel">
+    <header class="panel-head"><h2>Recently changed</h2><a href="/search?status=all">Search all</a></header>
+    {{if $d.Recent}}
+    <table class="rows compact">{{range $d.Recent}}{{template "row" .}}{{end}}</table>
+    {{else}}
+    <p class="empty">No phials yet. <a href="/remember">Remember the first one</a>, or run <code>phial import lard</code>.</p>
+    {{end}}
+  </section>
+</div>
+
+<section class="panel">
+  <header class="panel-head"><h2>Subjects</h2><span class="muted">{{len $d.Subjects}}</span></header>
+  <table class="subjects">
+    <thead><tr><th scope="col">Subject</th><th scope="col">Description</th><th scope="col" class="num">Active</th><th scope="col" class="num">Updated</th></tr></thead>
+    <tbody>
+    {{range $d.Subjects}}
+    <tr><td class="id"><a href="/s/{{.Path}}">{{.Path}}</a></td><td class="desc">{{if .Description}}{{.Description}}{{else}}<span class="dash">-</span>{{end}}</td><td class="num">{{.Active}}</td><td class="num when">{{age .UpdatedAt}}</td></tr>
+    {{else}}
+    <tr><td colspan="4" class="empty">No subjects yet.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}

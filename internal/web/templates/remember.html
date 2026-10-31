@@ -1,0 +1,32 @@
+{{define "content"}}
+<div class="title-row">
+  <div>
+    <h1>Remember</h1>
+    <p class="lede">One durable statement, with its specifics: “deploys to alastor at phial.hogwarts.dev”, not “has a deployment”.</p>
+  </div>
+</div>
+<form method="post" action="/remember" class="form panel">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <div class="field">
+    <label for="subject">Subject</label>
+    <input id="subject" name="subject" value="{{.Data}}" required list="subjects" aria-describedby="subject-help">
+    <p class="help" id="subject-help">profile, areas/&lt;project&gt;, topics/&lt;domain&gt; or people/&lt;name&gt;. A new one is made for you.</p>
+    <datalist id="subjects">{{range .Groups}}{{range .Subjects}}<option value="{{.Path}}">{{end}}{{end}}</datalist>
+  </div>
+  <div class="field">
+    <label for="text">Text</label>
+    <textarea id="text" name="text" rows="3" required></textarea>
+  </div>
+  <div class="field-row">
+    <div class="field"><label for="kind">Kind</label>{{template "kindselect" "fact"}}</div>
+    <div class="field"><label for="paths">Paths</label><input id="paths" name="paths" placeholder="deploy.target" aria-describedby="paths-help"><p class="help" id="paths-help">Dotted, lowercase. Separate two with a comma.</p></div>
+    <div class="field"><label for="loci">Code anchors</label><input id="loci" name="loci" placeholder="cmd/phial/main.go#serve"></div>
+  </div>
+  <div class="field">
+    <label for="description">Subject description</label>
+    <input id="description" name="description" aria-describedby="desc-help">
+    <p class="help" id="desc-help">Only when this makes a new subject.</p>
+  </div>
+  <div class="form-foot"><button type="submit" class="button primary">Remember</button></div>
+</form>
+{{end}}

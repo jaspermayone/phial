@@ -1,0 +1,93 @@
+{{define "content"}}
+{{$d := .Data}}{{$p := $d.P}}{{$csrf := .CSRF}}
+<p class="crumbs"><a href="/">Overview</a> / <a href="/s/{{$p.Subject}}">{{$p.Subject}}</a> / <code>{{$p.ID}}</code></p>
+<div class="title-row">
+  <div>
+    <h1 class="phial-text{{if ne $p.Status "active"}} gone{{end}}">{{$p.Text}}</h1>
+    <p class="lede">
+      <span class="kind">{{$p.Kind}}</span>{{range $p.Paths}} · {{.}}{{end}}
+      {{if $d.Global}} · applies to every project{{end}}
+      {{if eq $p.Status "retracted"}} · <span class="neg">retracted: {{$p.RetractReason}}</span>{{end}}
+      {{if $p.SupersededBy}} · superseded by <a href="/p/{{$p.SupersededBy}}">the newer phial</a>{{end}}
+    </p>
+  </div>
+  {{if eq $p.Status "active"}}
+  <form method="post" action="/p/{{$p.ID}}/confirm"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit" class="button primary">Still true</button></form>
+  {{end}}
+</div>
+
+<div class="detail">
+  <div class="detail-main">
+    <section class="panel">
+      <header class="panel-head"><h2>Level</h2>{{template "level" $d.Rank}}</header>
+      <dl class="kv">
+        <div><dt>Freshness</dt><dd class="num">{{pct $d.Rank.Freshness}}</dd></div>
+        <div><dt>Trust</dt><dd class="num">{{pct $d.Rank.Trust}}</dd></div>
+        <div><dt>Last confirmed</dt><dd class="num">{{age $p.LastConfirmed}}</dd></div>
+        <div><dt>Code check</dt><dd>{{$p.VerifyState}}{{if $p.VerifyNote}}: {{$p.VerifyNote}}{{end}}{{if not $p.VerifiedAt.IsZero}}, {{age $p.VerifiedAt}}{{end}}</dd></div>
+        <div><dt>Served to agents</dt><dd class="num">{{$d.Served}}{{if $d.Served}}, last {{age $d.LastServed}}{{end}}</dd></div>
+      </dl>
+    </section>
+
+    {{if eq $p.Status "active"}}
+    <details class="panel act">
+      <summary>Rewrite it</summary>
+      <p class="help">The old text stays as history. Use this when the fact changed.</p>
+      <form method="post" action="/p/{{$p.ID}}/supersede" class="form">
+        <input type="hidden" name="csrf" value="{{$csrf}}">
+        <div class="field"><label for="text">New text</label><textarea id="text" name="text" rows="3" required>{{$p.Text}}</textarea></div>
+        <div class="field-row">
+          <div class="field"><label for="kind">Kind</label>{{template "kindselect" $p.Kind}}</div>
+          <div class="field"><label for="paths">Paths</label><input id="paths" name="paths" value="{{join $p.Paths ", "}}"></div>
+        </div>
+        <div class="form-foot"><button type="submit" class="button">Supersede</button></div>
+      </form>
+    </details>
+    <details class="panel act">
+      <summary class="neg">Retract it</summary>
+      <p class="help">Use this when it is simply no longer true. It stays as history; only <code>phial purge</code> on the server removes it.</p>
+      <form method="post" action="/p/{{$p.ID}}/retract" class="form">
+        <input type="hidden" name="csrf" value="{{$csrf}}">
+        <div class="field"><label for="reason">Why is it no longer true?</label><input id="reason" name="reason" required></div>
+        <div class="form-foot"><button type="submit" class="button danger">Retract</button></div>
+      </form>
+    </details>
+    {{end}}
+  </div>
+
+  <aside class="detail-side">
+    <section class="panel">
+      <header class="panel-head"><h2>Record</h2></header>
+      <dl class="kv">
+        <div><dt>ID</dt><dd><code>{{$p.ID}}</code></dd></div>
+        <div><dt>Subject</dt><dd><a href="/s/{{$p.Subject}}">{{$p.Subject}}</a></dd></div>
+        <div><dt>Origin</dt><dd>{{$p.Origin}}</dd></div>
+        <div><dt>Created</dt><dd class="num">{{date $p.CreatedAt}}</dd></div>
+        {{if $p.Loci}}<div><dt>Code</dt><dd>{{range $p.Loci}}<code>{{.String}}</code> {{end}}</dd></div>{{end}}
+      </dl>
+    </section>
+    <section class="panel">
+      <header class="panel-head"><h2>Sources</h2><span class="muted">{{len $p.Provenance}}</span></header>
+      {{if $p.Provenance}}
+      <ul class="list">
+        {{range $p.Provenance}}<li>
+          {{if .Source}}<span>{{.Source}}</span>{{end}}
+          {{if .Repo}}<code>{{.Repo}}</code>{{end}}
+          {{if .Commit}}<span>commit <code>{{.Commit}}</code></span>{{end}}
+          {{if .CheckpointID}}<span>checkpoint <code>{{.CheckpointID}}</code></span>{{end}}
+          {{if .SessionID}}<span>session <code>{{.SessionID}}</code></span>{{end}}
+        </li>{{end}}
+      </ul>
+      {{else}}<p class="empty">No source was recorded.</p>{{end}}
+    </section>
+    {{if gt (len $d.History) 1}}
+    <section class="panel">
+      <header class="panel-head"><h2>History</h2><span class="muted">{{len $d.History}} versions</span></header>
+      <ol class="history">
+        {{range $d.History}}<li class="st-{{.Status}}{{if eq .ID $p.ID}} here{{end}}"><a href="/p/{{.ID}}">{{.Text}}</a><span class="sub">{{.Status}} · {{date .CreatedAt}}</span></li>{{end}}
+      </ol>
+    </section>
+    {{end}}
+  </aside>
+</div>
+{{end}}
