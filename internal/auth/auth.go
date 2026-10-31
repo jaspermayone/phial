@@ -30,6 +30,10 @@ type Auth struct {
 	Secure  bool   // set the Secure flag on cookies
 	Now     func() time.Time
 	enabled bool
+	// Origin is the public origin ("https://phial.hogwarts.dev"). When it is
+	// set, a POST's Origin header must equal it; this works behind a proxy
+	// that rewrites Host. When it is empty, the Origin must match Host.
+	Origin string
 }
 
 // New builds an Auth. An empty token disables auth (mode "none").
@@ -129,13 +133,33 @@ func (a *Auth) SessionFrom(r *http.Request) *Session {
 // CheckCSRF validates a state-changing UI request: the form token must
 // match the session, and an Origin header, when sent, must be this host.
 func (a *Auth) CheckCSRF(r *http.Request, s *Session) bool {
-	if o := r.Header.Get("Origin"); o != "" {
-		u, err := url.Parse(o)
-		if err != nil || u.Host != r.Host {
-			return false
-		}
+	if !a.SameOrigin(r) {
+		return false
 	}
 	return hmac.Equal([]byte(r.PostFormValue("csrf")), []byte(s.CSRF))
+}
+
+// SameOrigin reports whether a request's Origin header, when sent, is this
+// server. A missing Origin passes; the CSRF token still has to match.
+func (a *Auth) SameOrigin(r *http.Request) bool {
+	o := r.Header.Get("Origin")
+	if o == "" {
+		return true
+	}
+	if a.Origin != "" {
+		return strings.EqualFold(strings.TrimSuffix(o, "/"), a.Origin)
+	}
+	u, err := url.Parse(o)
+	return err == nil && u.Host == r.Host
+}
+
+// OriginOf turns a public URL into its origin: scheme and host only.
+func OriginOf(publicURL string) string {
+	u, err := url.Parse(publicURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return strings.ToLower(u.Scheme + "://" + u.Host)
 }
 
 // Fingerprint is a short, safe label for the token, for logs.

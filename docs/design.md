@@ -198,7 +198,11 @@ Rules:
    Old and stale active phials are not deleted either. They rank lower (section 7.1).
 5. The one way to remove a phial is `phial purge <id>` on the server CLI. It is for a phial that
    must not exist, for example one that holds a secret. It is not an MCP tool, so no agent can
-   call it. It writes an audit line with the ID, the time and the reason, but not the text.
+   call it. It writes an audit line with the ID, the time, the reason and a hash of the subject and
+   text, but not the text. The hash stops an import from bringing the phial back. The store runs
+   with `secure_delete`, the full-text index uses FTS5 `secure-delete`, and a purge ends with
+   `VACUUM` and a WAL checkpoint, so the text is gone from the live files. Backups made before
+   the purge still hold it: purge those too.
 
 ## 7. Read surfaces
 
@@ -361,8 +365,15 @@ The server also serves a browser UI at `/`, for a person to read and tend the me
 - **Sign-in.** `/login` takes the server token and sets a session cookie: HttpOnly,
   `SameSite=Strict`, `Secure` when `public_url` is https, valid for 30 days. The cookie is signed
   with a key derived from the token, so a new token signs every session out.
-- **Forms.** Every POST needs the session and a CSRF token from the page. A cross-origin `Origin`
-  header is refused. Failed logins slow down, up to 3 seconds per try.
+- **Forms.** Every POST needs the session and a CSRF token from the page. An `Origin` header must
+  equal the origin of `public_url` when it is set (this works behind a proxy that rewrites
+  `Host`), or else the request's `Host`. Failed logins slow down, up to 3 seconds per try. The
+  `next` target after login must be a local path; control characters and backslashes are refused.
+- **Sign-out** clears the cookie in the browser only. A copied cookie stays valid until it expires,
+  30 days at most. Changing the token ends every session at once. A server-side session list is
+  left for milestone 3, with OAuth.
+- **Mode `none`** is for local testing. It is only allowed on a loopback address, the server then
+  answers only loopback `Host` names, and the MCP SDK's DNS-rebinding guard stays on.
 - The UI has no purge. Purge stays on the server CLI.
 
 ## 11. Security

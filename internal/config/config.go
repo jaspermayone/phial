@@ -74,6 +74,9 @@ func load(path string, getenv func(string) string) (*Config, error) {
 		if err := toml.Unmarshal(b, c); err != nil {
 			return nil, fmt.Errorf("config %s: %w", path, err)
 		}
+		if err := fillDecayDefaults(b, &c.Ranking); err != nil {
+			return nil, fmt.Errorf("config %s: %w", path, err)
+		}
 	case errors.Is(err, os.ErrNotExist):
 	default:
 		return nil, err
@@ -138,3 +141,40 @@ func (c *Config) validate() error {
 
 // SecureCookies reports whether UI cookies need the Secure flag.
 func (c *Config) SecureCookies() bool { return strings.HasPrefix(c.PublicURL, "https://") }
+
+// fillDecayDefaults puts back the default half-life or floor for a kind
+// whose table sets only the other one. Without it, a config that changes a
+// half-life would silently set that kind's floor to 0.
+func fillDecayDefaults(b []byte, rc *rank.Config) error {
+	var raw struct {
+		Ranking struct {
+			Profile map[string]any            `toml:"profile"`
+			Kinds   map[string]map[string]any `toml:"kinds"`
+		} `toml:"ranking"`
+	}
+	if err := toml.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	def := rank.Default()
+	fill := func(set map[string]any, d *rank.Decay, dflt rank.Decay) {
+		if _, ok := set["half_life"]; !ok {
+			d.HalfLife = dflt.HalfLife
+		}
+		if _, ok := set["floor"]; !ok {
+			d.Floor = dflt.Floor
+		}
+	}
+	if raw.Ranking.Profile != nil {
+		fill(raw.Ranking.Profile, &rc.Profile, def.Profile)
+	}
+	for k, set := range raw.Ranking.Kinds {
+		dflt, ok := def.Kinds[k]
+		if !ok {
+			dflt = def.Kinds["fact"]
+		}
+		d := rc.Kinds[k]
+		fill(set, &d, dflt)
+		rc.Kinds[k] = d
+	}
+	return nil
+}

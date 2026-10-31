@@ -81,12 +81,14 @@ func New(st *store.Store) *mcp.Server {
 //
 // The SDK's DNS-rebinding guard rejects a loopback socket that carries a
 // non-loopback Host header, which is every request behind a reverse proxy.
-// phial authenticates every request, so the guard is off.
-func HTTPHandler(st *store.Store) http.Handler {
+// With a token on every request the guard adds nothing, so authed turns it
+// off. Without auth (mode none) it stays on: it is then the only thing that
+// stops a rebinding web page from reaching a loopback server.
+func HTTPHandler(st *store.Store, authed bool) http.Handler {
 	srv := New(st)
 	return mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return srv },
-		&mcp.StreamableHTTPOptions{DisableLocalhostProtection: true},
+		&mcp.StreamableHTTPOptions{DisableLocalhostProtection: authed},
 	)
 }
 
@@ -136,7 +138,7 @@ func (h *handlers) getContext(ctx context.Context, _ *mcp.CallToolRequest, a get
 	var b strings.Builder
 	var served []string
 
-	profile, err := h.st.Recall(ctx, store.Query{Subject: "profile", Limit: 200})
+	profile, err := h.st.Recall(ctx, store.Query{Subject: "profile", All: true})
 	if err != nil {
 		return fail(err)
 	}
@@ -156,7 +158,7 @@ func (h *handlers) getContext(ctx context.Context, _ *mcp.CallToolRequest, a get
 		if sub != nil && sub.Description != "" {
 			fmt.Fprintf(&b, "%s\n\n", sub.Description)
 		}
-		rs, err := h.st.Recall(ctx, store.Query{Subject: area, Limit: 200})
+		rs, err := h.st.Recall(ctx, store.Query{Subject: area, All: true})
 		if err != nil {
 			return fail(err)
 		}
@@ -223,7 +225,7 @@ func (h *handlers) outline(ctx context.Context, _ *mcp.CallToolRequest, a outlin
 	if a.Depth == 0 {
 		a.Depth = 2
 	}
-	rs, err := h.st.Recall(ctx, store.Query{Subject: a.Subject, PathPrefix: a.Path, Limit: 200})
+	rs, err := h.st.Recall(ctx, store.Query{Subject: a.Subject, PathPrefix: a.Path, All: true})
 	if err != nil {
 		return fail(err)
 	}
@@ -255,19 +257,14 @@ func (h *handlers) read(ctx context.Context, _ *mcp.CallToolRequest, a readArgs)
 	if err != nil {
 		return fail(err)
 	}
-	rs, err := h.st.Recall(ctx, store.Query{Subject: sub.Path, Limit: 200})
+	// read is exact and whole, like lard's memory_read: a parent does not
+	// pull in its children, and no phial is cut off.
+	rs, err := h.st.Recall(ctx, store.Query{Subject: sub.Path, Exact: true, All: true})
 	if err != nil {
 		return fail(err)
 	}
-	// read is exact: a parent does not pull in its children.
-	own := rs[:0]
-	for _, r := range rs {
-		if r.Subject == sub.Path {
-			own = append(own, r)
-		}
-	}
-	_ = h.st.RecordReceipts(ctx, "read", ids(own))
-	return text(render.Subject(sub, own, h.st.Now())), nil, nil
+	_ = h.st.RecordReceipts(ctx, "read", ids(rs))
+	return text(render.Subject(sub, rs, h.st.Now())), nil, nil
 }
 
 // ---- writes ----

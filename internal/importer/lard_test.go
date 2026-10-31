@@ -113,12 +113,27 @@ func TestImportIsIdempotentAndKeepsDates(t *testing.T) {
 	if sub, _ := st.ResolveProject(ctx, store.ProjectHints{GitRemote: "git@github.com:jaspermayone/infra.git"}); sub != "areas/infra" {
 		t.Fatalf("repos not linked: %q", sub)
 	}
+	// A dry run now counts what is already there.
+	if dry2, _ := Import(ctx, st, subs, true); dry2.Existing != 4 || dry2.Created != 0 {
+		t.Fatalf("dry run after import = %+v", dry2)
+	}
 	// A superseded import is not brought back by a re-run.
 	if _, err := st.Supersede(ctx, store.SupersedeInput{ID: p.ID, Text: "Forks go in jaspermayone-forks"}); err != nil {
 		t.Fatal(err)
 	}
 	if third, _ := Import(ctx, st, subs, false); third.Created != 0 {
 		t.Fatalf("re-import resurrected a superseded phial: %+v", third)
+	}
+	// Nor is a purged one.
+	agenix, err := st.Recall(ctx, store.Query{Text: "agenix"})
+	if err != nil || len(agenix) != 1 {
+		t.Fatalf("recall agenix: %v %v", agenix, err)
+	}
+	if err := st.Purge(ctx, agenix[0].ID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if fourth, _ := Import(ctx, st, subs, false); fourth.Created != 0 {
+		t.Fatalf("re-import resurrected a purged phial: %+v", fourth)
 	}
 }
 

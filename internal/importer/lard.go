@@ -277,9 +277,10 @@ func headingPath(h string) string {
 	return p
 }
 
-// Import writes subjects into the store. With dryRun it only counts. A
-// subject that fails is reported and the others still import. Running it
-// twice does not make copies.
+// Import writes subjects into the store. With dryRun it only counts, and
+// st may be nil when there is no database yet. A subject that fails is
+// reported and the others still import. Running it twice does not make
+// copies, and a purged phial is never imported again.
 func Import(ctx context.Context, st *store.Store, subs []LardSubject, dryRun bool) (*Report, error) {
 	rep := &Report{DryRun: dryRun}
 	for _, sub := range subs {
@@ -292,6 +293,11 @@ func Import(ctx context.Context, st *store.Store, subs []LardSubject, dryRun boo
 			continue
 		}
 		if dryRun {
+			if st != nil {
+				if err := countExisting(ctx, st, sub.Path, items, &sr); err != nil {
+					sr.Error = err.Error()
+				}
+			}
 			rep.add(sr)
 			continue
 		}
@@ -328,11 +334,13 @@ func importSubject(ctx context.Context, st *store.Store, sub LardSubject, items 
 		}
 	}
 	for _, it := range items {
-		if _, err := st.FindByText(ctx, sub.Path, it.Text); err == nil {
+		skip, err := known(ctx, st, sub.Path, it.Text)
+		if err != nil {
+			return err
+		}
+		if skip {
 			sr.Existing++
 			continue
-		} else if !errors.Is(err, store.ErrNotFound) {
-			return err
 		}
 		created := it.Date
 		if created.IsZero() {
@@ -358,6 +366,31 @@ func importSubject(ctx context.Context, st *store.Store, sub LardSubject, items 
 			return fmt.Errorf("item %q: %w", truncate(it.Text, 60), err)
 		}
 		sr.Created++
+	}
+	return nil
+}
+
+// known reports whether an item is already in the store in any status, or
+// was purged. A purged phial must not come back from a re-import.
+func known(ctx context.Context, st *store.Store, subject, text string) (bool, error) {
+	if _, err := st.FindByText(ctx, subject, text); err == nil {
+		return true, nil
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return false, err
+	}
+	return st.WasPurged(ctx, subject, text)
+}
+
+// countExisting fills a dry run's report with what an apply would skip.
+func countExisting(ctx context.Context, st *store.Store, subject string, items []Item, sr *SubjectReport) error {
+	for _, it := range items {
+		skip, err := known(ctx, st, subject, it.Text)
+		if err != nil {
+			return err
+		}
+		if skip {
+			sr.Existing++
+		}
 	}
 	return nil
 }

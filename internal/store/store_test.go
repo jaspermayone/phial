@@ -1,8 +1,11 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -336,4 +339,62 @@ func resultIDs(rs []Result) []string {
 		out[i] = r.ID
 	}
 	return out
+}
+
+func TestPurgeLeavesNoTextOnDisk(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "phial.db")
+	s := must(Open(path, rank.Default()))
+	ctx := context.Background()
+	const secret = "SECRETzqxv9876API"
+	p := remember(t, s, RememberInput{Subject: "areas/x", Text: "the key is " + secret})
+	for i := 0; i < 50; i++ { // more rows, so the FTS index has segments
+		remember(t, s, RememberInput{Subject: "areas/x", Text: fmt.Sprintf("filler phial number %d", i)})
+	}
+	if err := s.Purge(ctx, p.ID, "held a secret"); err != nil {
+		t.Fatal(err)
+	}
+	if ok := must(s.WasPurged(ctx, "areas/x", "the key is "+secret)); !ok {
+		t.Fatal("purge hash not recorded")
+	}
+	s.Close()
+	files, _ := filepath.Glob(path + "*")
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(bytes.ToLower(b), bytes.ToLower([]byte(secret))) {
+			t.Errorf("%s still holds the purged text", filepath.Base(f))
+		}
+	}
+}
+
+func TestRecallWithoutTextRanksEveryRow(t *testing.T) {
+	s, c := open(t)
+	ctx := context.Background()
+	old := c.now().Add(-3 * 365 * 24 * time.Hour)
+	for i := 0; i < 1100; i++ {
+		remember(t, s, RememberInput{Subject: "areas/x", Text: fmt.Sprintf("old fact %d", i), CreatedAt: old})
+	}
+	fresh := remember(t, s, RememberInput{Subject: "areas/x", Text: "the newest fact"})
+	got := must(s.Recall(ctx, Query{Subject: "areas/x", Limit: 5}))
+	if len(got) == 0 || got[0].ID != fresh.ID {
+		t.Fatalf("newest phial not ranked first among 1101: got %v", resultIDs(got))
+	}
+	all := must(s.Recall(ctx, Query{Subject: "areas/x", All: true}))
+	if len(all) != 1101 {
+		t.Fatalf("All returned %d, want 1101", len(all))
+	}
+}
+
+func TestRecallExactSubject(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	parent := remember(t, s, RememberInput{Subject: "areas/homelab", Text: "parent fact"})
+	remember(t, s, RememberInput{Subject: "areas/homelab/netbox", Text: "child fact"})
+	got := must(s.Recall(ctx, Query{Subject: "areas/homelab", Exact: true, All: true}))
+	if len(got) != 1 || got[0].ID != parent.ID {
+		t.Fatalf("exact recall = %v", resultIDs(got))
+	}
 }

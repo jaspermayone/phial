@@ -73,3 +73,19 @@ func TestNoneOnlyOnLoopback(t *testing.T) {
 		t.Fatal("none on all interfaces accepted")
 	}
 }
+
+func TestPartialDecayKeepsTheOtherDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	os.WriteFile(path, []byte("[ranking.kinds.fact]\nhalf_life = \"90d\"\n[ranking.kinds.decision]\nfloor = 0.1\n"), 0o600)
+	c, err := load(path, env(map[string]string{"PHIAL_TOKEN": tok, "XDG_DATA_HOME": dir}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := c.Ranking.Kinds["fact"]; time.Duration(f.HalfLife) != 90*rank.Day || f.Floor != rank.Default().Kinds["fact"].Floor {
+		t.Fatalf("fact = %+v, want 90d with the default floor", f)
+	}
+	if d := c.Ranking.Kinds["decision"]; d.Floor != 0.1 || d.HalfLife != rank.Default().Kinds["decision"].HalfLife {
+		t.Fatalf("decision = %+v, want floor 0.1 with the default half-life", d)
+	}
+}

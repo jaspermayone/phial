@@ -105,3 +105,18 @@ func TestDisabled(t *testing.T) {
 		t.Fatal("disabled auth should let every request in")
 	}
 }
+
+func TestSameOriginBehindAProxy(t *testing.T) {
+	a := New(tok, true)
+	a.Origin = OriginOf("https://phial.hogwarts.dev/")
+	r := httptest.NewRequest("POST", "http://127.0.0.1:7480/login", nil)
+	r.Host = "127.0.0.1:7480" // the proxy rewrote Host
+	r.Header.Set("Origin", "https://phial.hogwarts.dev")
+	if !a.SameOrigin(r) {
+		t.Fatal("public origin refused behind a Host-rewriting proxy")
+	}
+	r.Header.Set("Origin", "https://evil.example")
+	if a.SameOrigin(r) {
+		t.Fatal("foreign origin accepted")
+	}
+}

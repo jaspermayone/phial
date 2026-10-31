@@ -253,11 +253,9 @@ func (u *UI) loginPage(w http.ResponseWriter, r *http.Request) {
 
 func (u *UI) login(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
-	if o := r.Header.Get("Origin"); o != "" {
-		if ou, err := url.Parse(o); err != nil || ou.Host != r.Host {
-			http.Error(w, "cross-origin login refused", http.StatusForbidden)
-			return
-		}
+	if !u.auth.SameOrigin(r) {
+		http.Error(w, "cross-origin login refused", http.StatusForbidden)
+		return
 	}
 	next := safeNext(r.PostFormValue("next"))
 	if !u.auth.CheckToken(strings.TrimSpace(r.PostFormValue("token"))) {
@@ -281,8 +279,20 @@ func (u *UI) login(w http.ResponseWriter, r *http.Request) {
 }
 
 // safeNext only allows a local path, so /login cannot redirect off-site.
+// Browsers drop tabs and newlines while they parse a URL and read "\" as
+// "/", so "/\t/evil.example" would become "//evil.example": any control
+// character or backslash is refused before the path checks.
 func safeNext(n string) string {
-	if n == "" || !strings.HasPrefix(n, "/") || strings.HasPrefix(n, "//") || strings.HasPrefix(n, `/\`) {
+	for _, r := range n {
+		if r < 0x20 || r == 0x7f || r == '\\' {
+			return "/"
+		}
+	}
+	if !strings.HasPrefix(n, "/") || strings.HasPrefix(n, "//") {
+		return "/"
+	}
+	u, err := url.Parse(n)
+	if err != nil || u.Scheme != "" || u.Host != "" {
 		return "/"
 	}
 	return n
@@ -379,7 +389,7 @@ func (u *UI) subject(w http.ResponseWriter, r *http.Request, s *auth.Session) {
 		return
 	}
 	status := r.URL.Query().Get("status")
-	rs, err := u.st.Recall(ctx, store.Query{Subject: path, Status: status, Limit: 200})
+	rs, err := u.st.Recall(ctx, store.Query{Subject: path, Status: status, All: true})
 	if err != nil {
 		u.fail(w, r, s, err)
 		return

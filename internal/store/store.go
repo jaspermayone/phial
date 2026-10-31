@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"embed"
 	"encoding/hex"
@@ -63,7 +64,7 @@ func Open(path string, rc rank.Config) (*Store, error) {
 			return nil, err
 		}
 	}
-	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_txlock=immediate"
+	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=secure_delete(1)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -686,8 +687,8 @@ func (s *Store) Purge(ctx context.Context, id, reason string) error {
 		return err
 	}
 	defer tx.Rollback()
-	var found string
-	if err := tx.QueryRow(`SELECT id FROM phials WHERE id=?`, id).Scan(&found); err != nil {
+	var subject, text string
+	if err := tx.QueryRow(`SELECT subject, text FROM phials WHERE id=?`, id).Scan(&subject, &text); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("%s: %w", id, ErrNotFound)
 		}
@@ -704,10 +705,36 @@ func (s *Store) Purge(ctx context.Context, id, reason string) error {
 			return err
 		}
 	}
-	if _, err := tx.Exec(`INSERT INTO purge_log (phial_id, reason, at) VALUES (?,?,?)`, id, reason, ts(s.Now())); err != nil {
+	if _, err := tx.Exec(`INSERT INTO purge_log (phial_id, reason, at, text_hash) VALUES (?,?,?,?)`,
+		id, reason, ts(s.Now()), TextHash(subject, text)); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// secure_delete zeroes the freed pages, but the old pages can still sit
+	// in the WAL. Rewrite the file and empty the WAL so the text is gone
+	// from disk. Older backups still hold it; the docs say so.
+	if _, err := s.db.ExecContext(ctx, `VACUUM`); err != nil {
+		return fmt.Errorf("purge: vacuum: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		return fmt.Errorf("purge: checkpoint: %w", err)
+	}
+	return nil
+}
+
+// TextHash identifies a subject and text without holding the text.
+func TextHash(subject, text string) string {
+	sum := sha256.Sum256([]byte(CleanSubject(subject) + "\x00" + normText(text)))
+	return hex.EncodeToString(sum[:])
+}
+
+// WasPurged reports whether a phial with this subject and text was purged.
+func (s *Store) WasPurged(ctx context.Context, subject, text string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM purge_log WHERE text_hash=?`, TextHash(subject, text)).Scan(&n)
+	return n > 0, err
 }
 
 // RecordReceipts notes that a read surface served these phials.
@@ -858,7 +885,9 @@ type Query struct {
 	Scope      string // "global" (profile, topics, people) or "area"
 	Locus      string // "file", "file#symbol" or "#symbol"
 	Status     string // "" = active only; "all" = every status; or one status
-	Limit      int    // default 20, max 200
+	Limit      int    // default 20, max 200; ignored with All
+	All        bool   // return every match, for full reads of one subject
+	Exact      bool   // Subject matches itself only, not its children
 	Lowest     bool   // sort ascending, for rank-report
 }
 
@@ -875,6 +904,9 @@ func (s *Store) Recall(ctx context.Context, q Query) ([]Result, error) {
 	}
 	if q.Limit > 200 {
 		q.Limit = 200
+	}
+	if q.All {
+		q.Limit = 0
 	}
 	var where []string
 	var args []any
@@ -901,8 +933,13 @@ func (s *Store) Recall(ctx context.Context, q Query) ([]Result, error) {
 	}
 	if q.Subject != "" {
 		sub := CleanSubject(q.Subject)
-		where = append(where, `(p.subject = ? OR p.subject LIKE ? ESCAPE '\')`)
-		args = append(args, sub, likeEscape(sub)+"/%")
+		if q.Exact {
+			where = append(where, `p.subject = ?`)
+			args = append(args, sub)
+		} else {
+			where = append(where, `(p.subject = ? OR p.subject LIKE ? ESCAPE '\')`)
+			args = append(args, sub, likeEscape(sub)+"/%")
+		}
 	}
 	if q.Kind != "" {
 		where = append(where, `p.kind = ?`)
@@ -941,11 +978,12 @@ func (s *Store) Recall(ctx context.Context, q Query) ([]Result, error) {
 	if len(where) > 0 {
 		sqlq += ` WHERE ` + strings.Join(where, ` AND `)
 	}
-	// Rank a bounded candidate set; FTS order is the first cut.
+	// With a query, BM25 order is the first cut and the best 1000 matches
+	// are ranked. With no query every filtered phial is ranked, because the
+	// score depends on age and trust, which SQL does not compute here.
 	if match != "" {
-		sqlq += ` ORDER BY bm25(phial_fts, 0.0, 10.0, 3.0, 1.0)`
+		sqlq += ` ORDER BY bm25(phial_fts, 0.0, 10.0, 3.0, 1.0) LIMIT 1000`
 	}
-	sqlq += ` LIMIT 1000`
 
 	rows, err := s.db.QueryContext(ctx, sqlq, args...)
 	if err != nil {
@@ -985,7 +1023,7 @@ func (s *Store) Recall(ctx context.Context, q Query) ([]Result, error) {
 		}
 		return a.Rank.Score > b.Rank.Score
 	})
-	if len(out) > q.Limit {
+	if q.Limit > 0 && len(out) > q.Limit {
 		out = out[:q.Limit]
 	}
 	batch := make([]*Phial, len(out))

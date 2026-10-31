@@ -95,6 +95,7 @@ func serve(ctx context.Context) error {
 		slog.Warn("auth is off (mode none); only use this on a loopback address for testing")
 	}
 	a := auth.New(token, cfg.SecureCookies())
+	a.Origin = auth.OriginOf(cfg.PublicURL)
 	h, err := httpapi.New(st, a)
 	if err != nil {
 		return err
@@ -153,11 +154,19 @@ func importCmd(ctx context.Context, args []string) error {
 		return err
 	}
 
-	_, st, err := openStore()
+	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	// A dry run writes nothing, so it does not create a database that is
+	// not there yet; it then cannot count what already exists.
+	var st *store.Store
+	if _, statErr := os.Stat(cfg.DB); *apply || statErr == nil {
+		if st, err = store.Open(cfg.DB, cfg.Ranking); err != nil {
+			return fmt.Errorf("open %s: %w", cfg.DB, err)
+		}
+		defer st.Close()
+	}
 	rep, err := importer.Import(ctx, st, subs, !*apply)
 	if err != nil {
 		return err

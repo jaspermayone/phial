@@ -176,3 +176,24 @@ func TestUILoginAndActions(t *testing.T) {
 		t.Fatal("still signed in after logout")
 	}
 }
+
+func TestNoAuthServesLoopbackHostsOnly(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "phial.db"), rank.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	h, err := New(st, auth.New("", false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for host, want := range map[string]int{"127.0.0.1:7480": 200, "localhost:7480": 200, "[::1]:7480": 200, "rebind.evil.example:7480": 403} {
+		r := httptest.NewRequest("GET", "/healthz", nil)
+		r.Host = host
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != want {
+			t.Errorf("Host %s: %d, want %d", host, w.Code, want)
+		}
+	}
+}
