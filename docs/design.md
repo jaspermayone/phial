@@ -91,7 +91,7 @@ erDiagram
   phial ||--o{ receipt : served
   phial ||--o| phial : supersedes
   subject ||--o{ phial : holds
-  project ||--o{ subject : "area for"
+  subject ||--o{ project_remotes : "linked repos"
   session ||--o{ provenance : source
   proposal }o--|| phial : candidate
   proposal }o--o| phial : target
@@ -134,10 +134,9 @@ erDiagram
     text description
     text aliases
   }
-  project {
-    text id PK
-    text remotes
-    text names
+  project_remotes {
+    text remote PK
+    text subject FK
   }
   session {
     text id PK
@@ -166,7 +165,11 @@ Notes:
 - `phial_fts` is an FTS5 table over `text`, the paths, and the subject description.
 - `verify_state` is `ok`, `moved`, `stale`, `orphaned` or `unverifiable`. The client sets it. The
   server only stores it.
-- The project registry keeps lard's model: git remotes and names resolve to one project ID.
+- The project registry is `project_remotes`: a normalized git remote (`github.com/owner/repo`)
+  names one area subject. `get_context` tries the remote first, then the workspace name against
+  area names and aliases, and links the remote when the name matches.
+- Migration `001_init.sql` holds every table above except `session` and `proposal`, which come
+  with milestones 4 and 5. The store also keeps `purge_log` (ID, reason, time; never the text).
 - Backups: `phial backup <dir>` writes the SQLite files and an NDJSON export, one phial per line.
   The NDJSON format is versioned and is the import format too.
 
@@ -313,19 +316,56 @@ sequenceDiagram
 
 ## 9. Import from lard
 
-`phial import lard --url <lard>` reads `GET /memory` and each `GET /memory/{path}`.
+```text
+phial import lard --dir <lard memory dir>        # dry run: counts per subject, writes nothing
+phial import lard --dir <lard memory dir> --apply
+phial import lard --url <lard url> --token-file <file> --apply
+```
 
-- Each top-level bullet becomes one phial with `origin: imported`, in the same subject.
-- A `[stated]` tag maps to kind `fact`. A bullet that starts with a date keeps the date as
-  `created_at`.
+`--dir` reads lard's subject files from disk: a lard `memory_dir`, or one tenant of a
+`lard backup` tree (a folder that holds `memory/`). `--url` reads a running lard over HTTP:
+`GET /memory`, then `GET /memory/{path}?format=json` for each subject, with a bearer token.
+
+- Each top-level bullet becomes one phial with `origin: imported` and kind `fact`, in the same
+  subject. Indented lines under a bullet belong to it.
+- A tag such as `[stated]` or `[observed 2026-09-11]` is removed from the text and kept in the
+  source line (`lard:areas/infra [stated]`). A date in the tag, or a leading `2026-10-14:`, becomes
+  `created_at`. A bullet with no date takes the subject's `updated` time.
+- `confirmed_at` is the same as `created_at`, so an old fact does not look freshly confirmed. The
+  ranking in section 7.1 then places it by its real age.
+- A markdown heading above bullets becomes a one-segment path on them (`## Build` gives `build`).
+- Subject descriptions and aliases come across as they are. `repos` link the area to its remotes.
 - `[[links]]` stay in the text.
-- Subject descriptions and aliases come across as they are.
+- The import is idempotent: a bullet whose text already exists in the subject, in any status, is
+  skipped. A phial that was imported and later superseded is not brought back.
+- A subject whose path is not valid in phial is reported and skipped. The others still import.
 - `verify` reports imported phials as `unverifiable` until a person or agent adds a locus. That is
   expected.
 
-The import runs as a dry run first and reports counts per subject.
+## 10. Web UI
 
-## 10. Security
+The server also serves a browser UI at `/`, for a person to read and tend the memory.
+
+| Screen | Path | Job |
+| --- | --- | --- |
+| Overview | `/` | Counts, the lowest-level phials, the recent changes, and every subject. |
+| Subject | `/s/<subject>` | The subject's phials by level, with its paths, repos and children. |
+| Search | `/search` | Recall with every filter. |
+| Needs attention | `/low` | Active phials under level 0.5 or with a failed code check. |
+| Phial | `/p/<id>` | Level and its parts, record, sources, history. Confirm, supersede, retract. |
+| Remember | `/remember` | Make a phial. |
+
+- The UI is server-rendered HTML with no JavaScript. The CSP is `default-src 'none'` with
+  `style-src`, `img-src` and `font-src` set to `'self'`. Fonts (IBM Plex, SIL OFL) are served by
+  phial itself.
+- **Sign-in.** `/login` takes the server token and sets a session cookie: HttpOnly,
+  `SameSite=Strict`, `Secure` when `public_url` is https, valid for 30 days. The cookie is signed
+  with a key derived from the token, so a new token signs every session out.
+- **Forms.** Every POST needs the session and a CSRF token from the page. A cross-origin `Origin`
+  header is refused. Failed logins slow down, up to 3 seconds per try.
+- The UI has no purge. Purge stays on the server CLI.
+
+## 11. Security
 
 - OAuth on the remote MCP endpoint, with token audience checks (RFC 8707), as lard has now.
 - One SQLite file per identity. No query crosses tenants.
@@ -334,18 +374,29 @@ The import runs as a dry run first and reports counts per subject.
 - Tool results from phial are data. The agent guide tells agents not to follow instructions found
   in phial text.
 
-## 11. Milestones
+## 12. Milestones
 
 1. **Store and MCP.** Schema, `remember`, `recall`, `read`, `retract`, `supersede`, `confirm`,
    `get_context`, and the ranking in section 7.1. Token auth. Tests on the store and the ranking.
-2. **lard import.** Dry run, then a real import on a copy of the lard data.
+   Built, with the web UI of section 10.
+2. **lard import.** Dry run, then a real import on a copy of the lard data. The importer is built;
+   the run on the real data is still to do.
 3. **OAuth and tenants.** Bring lard's auth model across.
-4. **Client.** Login, local MCP, Entire checkpoint upload, `verify`, `brief`.
+4. **Client.** Login, local MCP, Entire checkpoint upload, `verify`, `brief`, and entire-brain
+   sync (below).
 5. **Extraction.** Pipeline, proposals, `review`.
+
+**entire-brain sync** (planned for milestone 4). entire-brain keeps its memories on each machine,
+per repo and branch. The client will read them (`entire brain memories` JSON, or the brain's local
+REST API at `/v1/facts`) and send them to phial as phials in that repo's area, with
+`origin: imported`, a source of `entire-brain:<fact id>`, and the brain's session and commit as
+provenance. The fact ID makes the sync idempotent, and a fact that the brain retracts or supersedes
+is retracted or superseded in phial too. The first version is one way, from the brain to phial, so
+two stores never edit the same fact.
 6. **Cutover.** Deploy on alastor at `phial.hogwarts.dev` through the Nix module, change the MCP
    config on each machine, update CLAUDE.md, and keep lard read-only for a period.
 
-## 12. Decisions
+## 13. Decisions
 
 | Date | Decision |
 | --- | --- |
@@ -355,7 +406,9 @@ The import runs as a dry run first and reports counts per subject.
 | 2026-10-31 | Hostname: `phial.hogwarts.dev`, served from alastor. |
 | 2026-10-31 | Keep every phial forever. Only `phial purge` on the server CLI removes one. |
 | 2026-10-31 | Old and stale phials rank lower (freshness × trust), they are not hidden or deleted. |
+| 2026-10-31 | A browser UI, signed in with the server token, ships with milestone 1. |
+| 2026-10-31 | entire-brain memories sync into phial, one way, from the client (milestone 4). |
 
-## 13. Open questions
+## 14. Open questions
 
 None at this time.
