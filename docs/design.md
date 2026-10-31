@@ -106,6 +106,7 @@ erDiagram
     text supersedes FK
     text created_at
     text updated_at
+    text confirmed_at
     text verified_at
     text verify_state
   }
@@ -184,13 +185,14 @@ stateDiagram-v2
 Rules:
 
 1. `remember` with text identical to an active phial in the same subject returns the existing
-   phial. It does not make a copy.
+   phial. It does not make a copy. It sets `confirmed_at` on that phial to the current time.
 2. When extraction finds a candidate that is close to an active phial, it does not change that
    phial. It makes a proposal (`merge` or `supersede`) and keeps the candidate pending.
 3. An agent call to `supersede` with an explicit target applies at once. The agent named the
    target, so no review is needed.
 4. phial keeps every phial forever. There is no retention window and no `gc`. Superseded and
    retracted phials are hidden from default reads, and `recall --all` shows them as history.
+   Old and stale active phials are not deleted either. They rank lower (section 7.1).
 5. The one way to remove a phial is `phial purge <id>` on the server CLI. It is for a phial that
    must not exist, for example one that holds a secret. It is not an MCP tool, so no agent can
    call it. It writes an audit line with the ID, the time and the reason, but not the text.
@@ -202,12 +204,13 @@ The server exposes MCP and HTTP. The MCP tools:
 | Tool | Purpose |
 | --- | --- |
 | `get_context` | Session start. Returns the profile phials, the project's area outline, and the subject index. It returns an outline, not whole files. |
-| `recall` | BM25 search. Filters: `subject`, `kind`, `path` prefix, `scope`, `locus`, `status`. Returns phials with IDs and `(global)` labels. |
+| `recall` | Search, ranked as in section 7.1. Filters: `subject`, `kind`, `path` prefix, `scope`, `locus`, `status`. Returns phials with IDs, `(global)` labels, and age and stale labels. `explain: true` adds the score parts. |
 | `outline` | The tree for a subject or path prefix, at depth 1 to 3. |
 | `read` | One subject rendered as markdown from its active phials. Same shape as lard's `memory_read`, so old prompts keep working. |
 | `remember` | Make a phial. Arguments: `text`, `subject`, `kind`, `paths`, optional `locus`, `session_id`, `checkpoint_id`. |
 | `supersede` | Replace a phial with new text. |
 | `retract` | Mark a phial as no longer true, with a reason. |
+| `confirm` | Record that a phial is still true. Sets `confirmed_at`, which resets its age for ranking. |
 | `review` | List, apply or reject pending proposals. |
 
 Each read records a receipt. `phial vitality` shows phials that agents never get. These are
@@ -219,6 +222,63 @@ The client adds two tools to its local MCP server:
 | --- | --- |
 | `brief` | `recall` on the server plus `entire graph query` on the checkout, merged into one bounded packet. |
 | `verify` | Checks each locus in the current repo with entire-graph, then reports the result to the server. |
+
+### 7.1 Ranking
+
+phial keeps every phial, so ranking does the work that deletion does in other tools. An old or
+stale phial ranks lower, but it can always come back.
+
+```text
+score = relevance × freshness × trust
+```
+
+**relevance** is the BM25 score from FTS5, normalized to 0..1 for the query. Reads with no query,
+such as `get_context` and `outline`, use 1.
+
+**freshness** depends on the age of the phial and on its kind:
+
+```text
+age       = now − max(confirmed_at, updated_at)
+freshness = max(floor, 0.5 ^ (age / half_life))
+```
+
+| Kind or subject | half_life | floor |
+| --- | --- | --- |
+| `profile` subject | none (freshness is always 1) | 1 |
+| `invariant`, `convention`, `preference` | 2 years | 0.5 |
+| `decision` | 1 year | 0.4 |
+| `fact` | 180 days | 0.3 |
+| `gotcha` | 180 days | 0.3 |
+
+The floor makes sure that an old phial that matches a query well still comes back. Age starts again
+when a phial is confirmed, which happens in three ways:
+
+1. An agent calls `confirm`.
+2. `remember` or extraction produces the same text again.
+3. `verify` sets `verify_state` to `ok`.
+
+**trust** comes from `verify_state`:
+
+| verify_state | trust | Label in results |
+| --- | --- | --- |
+| `ok` | 1.0 | none |
+| `unverifiable` | 0.9 | none |
+| `moved` | 0.7 | `(moved: <old path>)` |
+| `stale` | 0.3 | `(stale: <symbol> not found)` |
+| `orphaned` | 0.2 | `(orphaned: repo not found)` |
+
+Rules:
+
+1. Results always carry an age label, for example `(confirmed 8 months ago)`, so an agent can judge
+   an old phial itself.
+2. `get_context` and `outline` show the top phials for each subject by score. They fold the rest
+   into one line, for example `+12 older phials, use recall`.
+3. Receipts do not change the score. A phial that is served often would rank higher, then be served
+   more often, and it would never go down. Receipts are for the `vitality` report only.
+4. The half-lives, floors and trust values live in config, not in code, so they can be tuned
+   without a migration.
+5. `phial rank-report` lists the active phials with the lowest scores. They are candidates to
+   confirm, rewrite or retract.
 
 ## 8. Write path: sessions
 
@@ -276,8 +336,8 @@ The import runs as a dry run first and reports counts per subject.
 
 ## 11. Milestones
 
-1. **Store and MCP.** Schema, `remember`, `recall`, `read`, `retract`, `supersede`, `get_context`.
-   Token auth. Tests on the store.
+1. **Store and MCP.** Schema, `remember`, `recall`, `read`, `retract`, `supersede`, `confirm`,
+   `get_context`, and the ranking in section 7.1. Token auth. Tests on the store and the ranking.
 2. **lard import.** Dry run, then a real import on a copy of the lard data.
 3. **OAuth and tenants.** Bring lard's auth model across.
 4. **Client.** Login, local MCP, Entire checkpoint upload, `verify`, `brief`.
@@ -294,6 +354,7 @@ The import runs as a dry run first and reports counts per subject.
 | 2026-10-31 | Extraction runs on the server, with the server's own API key. |
 | 2026-10-31 | Hostname: `phial.hogwarts.dev`, served from alastor. |
 | 2026-10-31 | Keep every phial forever. Only `phial purge` on the server CLI removes one. |
+| 2026-10-31 | Old and stale phials rank lower (freshness × trust), they are not hidden or deleted. |
 
 ## 13. Open questions
 
