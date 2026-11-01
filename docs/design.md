@@ -29,8 +29,8 @@ and the subject layout come from [lard](https://tangled.org/dunkirk.sh/lard). Co
   source.
 - phial does not use embeddings. Recall is BM25 (keyword ranking) through SQLite FTS5.
   entire-brain removed semantic search, and lard never had it.
-- phial is not a team product. It is multi-user only in the sense lard is: one isolated store per
-  identity.
+- phial is not a hosted product. Users are the identities one authorization server vouches for
+  and the operator allows.
 
 ## 3. Concepts
 
@@ -47,6 +47,10 @@ and the subject layout come from [lard](https://tangled.org/dunkirk.sh/lard). Co
 | locus | Optional code anchor: a repo-relative path and an optional symbol, for example `internal/store/store.go#ListSubjects`. |
 | proposal | A queued merge or supersede that waits for review. |
 | receipt | A record that a read surface served a phial to an agent. |
+| user | One identity (an OAuth `sub`), with its own store. Only identities in `auth.allowed_users` get one. |
+| pool | A shared store with members and readers. It owns subjects (`areas/crane` and its children). |
+| view | One identity's merged picture: its own store plus its pools. |
+| ledger | The change log: who did what to which phial, when, with the text before and after. |
 
 ## 4. Architecture
 
@@ -173,6 +177,31 @@ Notes:
 - Backups: `phial backup <dir>` writes the SQLite files and an NDJSON export, one phial per line.
   The NDJSON format is versioned and is the import format too.
 
+### 5.1 Users, pools and the ledger
+
+```text
+<data_dir>/
+  users/<slug>/phial.db     one store per identity; slug = readable part + hash of the sub
+  users/<slug>/identity     the sub, so the worker can list users
+  pools/<name>/phial.db     one store per shared pool
+```
+
+- Every request carries an identity: the OAuth `sub` in mode `oauth`, or `primary_user` in mode
+  `token` and `none`. The identity's **view** fans every read out over its own store and its pools,
+  merges by score, and tags each result with its pool. A write goes to the pool that owns the
+  subject when the identity is a member, to the user's own store otherwise, and fails with
+  "read only" for a reader.
+- Pools are config (`[[pools]]`, or the Nix module), so adding a member is a deploy, not a UI
+  action. Members read and write; readers read.
+- Every phial records `created_by`. Every write appends a **ledger** row in the same transaction:
+  actor, action (`remember`, `confirm`, `supersede`, `retract`, `verify`, `propose`, `review`,
+  `purge`), phial, subject, text before, text after, note. The UI shows the ledger as an activity
+  feed with word diffs, per phial, per subject and per actor; the `changes` MCP tool shows the
+  same. Purge empties the text in the purged phial's older rows.
+- The ledger is the system of record for history. A git mirror of the rendered markdown, one
+  commit per ledger row with the actor as author, is a possible later export; it is not needed for
+  "who changed what and when".
+
 ## 6. Lifecycle
 
 ```mermaid
@@ -287,6 +316,13 @@ Rules:
 5. `phial rank-report` lists the active phials with the lowest scores. They are candidates to
    confirm, rewrite or retract.
 
+### 7.2 Proposals and review
+
+Extraction (section 8) never edits an active phial. When a candidate restates one (same text) it
+confirms it. When a candidate is close to one (word overlap of 0.6 or more) it files a
+**proposal**: a supersede that waits for a person. `review` (MCP) and the Proposals page (UI)
+list them with a diff; apply supersedes the target, reject keeps it. Both are ledger rows.
+
 ## 8. Write path: sessions
 
 ```mermaid
@@ -346,6 +382,14 @@ phial import lard --url <lard url> --token-file <file> --apply
 - `verify` reports imported phials as `unverifiable` until a person or agent adds a locus. That is
   expected.
 
+### 9.1 Import from entire-brain
+
+`phial-client sync` also exports each local entire-brain (`entire brain memories files`) for the
+repos under its roots and sends every active memory to phial as a phial in `areas/<repo>` with
+`origin: imported` and the source `entire-brain:<id>`. The client remembers the ids it sent, and
+`remember` is idempotent by text, so a re-run sends nothing twice. It is one way: phial never
+writes into the brain.
+
 ## 10. Web UI
 
 The server also serves a browser UI at `/`, for a person to read and tend the memory.
@@ -358,13 +402,18 @@ The server also serves a browser UI at `/`, for a person to read and tend the me
 | Needs attention | `/low` | Active phials under level 0.5 or with a failed code check. |
 | Phial | `/p/<id>` | Level and its parts, record, sources, history. Confirm, supersede, retract. |
 | Remember | `/remember` | Make a phial. |
+| Activity | `/activity` | The ledger: every change with its actor and a diff; filter by subject or actor. |
+| Proposals | `/proposals` | Changes extraction proposed; apply or reject. |
 
 - The UI is server-rendered HTML with no JavaScript. The CSP is `default-src 'none'` with
   `style-src`, `img-src` and `font-src` set to `'self'`. Fonts (IBM Plex, SIL OFL) are served by
   phial itself.
-- **Sign-in.** `/login` takes the server token and sets a session cookie: HttpOnly,
-  `SameSite=Strict`, `Secure` when `public_url` is https, valid for 30 days. The cookie is signed
-  with a key derived from the token, so a new token signs every session out.
+- **Sign-in.** With `ui_login = token`, `/login` takes the server token and signs in as
+  `primary_user`. With `ui_login = oauth`, `/login` sends the browser to the authorization server
+  (authorization code with PKCE) and `/auth/callback` signs in as the token's `sub`, if allowed.
+  Either way the session cookie is HttpOnly, `SameSite=Strict`, `Secure` when `public_url` is
+  https, valid for 30 days, and signed with a key derived from the token, so a new token signs
+  every session out.
 - **Forms.** Every POST needs the session and a CSRF token from the page. An `Origin` header must
   equal the origin of `public_url` when it is set (this works behind a proxy that rewrites
   `Host`), or else the request's `Host`. Failed logins slow down, up to 3 seconds per try. The
@@ -378,8 +427,13 @@ The server also serves a browser UI at `/`, for a person to read and tend the me
 
 ## 11. Security
 
-- OAuth on the remote MCP endpoint, with token audience checks (RFC 8707), as lard has now.
-- One SQLite file per identity. No query crosses tenants.
+- Mode `oauth`: every `/mcp` and `/api` request carries an access token, checked at the
+  authorization server's introspection endpoint (RFC 7662, cached up to 5 minutes). The token must
+  name phial (`<public_url>/mcp`) or an accepted audience (Authentik sets `aud` to the client id),
+  must carry a `sub`, and the `sub` must be allowed. phial publishes RFC 9728 protected-resource
+  metadata at `/.well-known/oauth-protected-resource[/mcp]`, so an MCP client finds the
+  authorization server from a bare 401.
+- One SQLite file per identity and per pool. A view only opens the stores its identity may read.
 - No secret values in phials. The client redacts before upload, and the extractor drops lines that
   match secret patterns.
 - Tool results from phial are data. The agent guide tells agents not to follow instructions found
@@ -407,6 +461,11 @@ two stores never edit the same fact.
 6. **Cutover.** Deploy on alastor at `phial.hogwarts.dev` through the Nix module, change the MCP
    config on each machine, update CLAUDE.md, and keep lard read-only for a period.
 
+Status on 2026-10-31: 1 to 5 are built. The client reads Claude Code transcripts; Entire
+checkpoints are linked through the `Entire-Checkpoint` commit trailer, because the Entire CLI's
+checkpoint JSON was not readable on the dev machine. `verify` uses entire-graph's `def` lookup
+when it is installed and a word search otherwise. 6 is in progress in `jaspermayone/infra`.
+
 ## 13. Decisions
 
 | Date | Decision |
@@ -419,6 +478,9 @@ two stores never edit the same fact.
 | 2026-10-31 | Old and stale phials rank lower (freshness × trust), they are not hidden or deleted. |
 | 2026-10-31 | A browser UI, signed in with the server token, ships with milestone 1. |
 | 2026-10-31 | entire-brain memories sync into phial, one way, from the client (milestone 4). |
+| 2026-10-31 | One store per user; only allowed users get one. Shared pools with members and readers, config-managed. |
+| 2026-10-31 | Every phial records its author, and every write is a ledger row with before and after text. |
+| 2026-10-31 | phial reuses the Authentik provider `lard` (client id `lard`) rather than a new provider. |
 
 ## 14. Open questions
 
