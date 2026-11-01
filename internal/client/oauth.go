@@ -68,12 +68,14 @@ func getJSON[T any](ctx context.Context, u string) (T, error) {
 
 // LoginDevice runs the device authorization grant (RFC 8628): it prints a
 // link and a code, and waits for the user to approve in any browser. The
-// client id and secret come from the config or PHIAL_CLIENT_ID and
-// PHIAL_CLIENT_SECRET, because Authentik has no usable dynamic registration.
+// client id comes from the config or PHIAL_CLIENT_ID; a public client (PKCE,
+// device code) needs no secret, and PHIAL_CLIENT_SECRET is only for a
+// confidential one. Dynamic registration is not used: Authentik's DCR needs
+// a token from an already signed-in user, which a fresh machine does not have.
 func LoginDevice(ctx context.Context, c *Config) error {
 	c.applyEnv()
 	if c.ClientID == "" {
-		return errors.New("no OAuth client: set PHIAL_CLIENT_ID (and PHIAL_CLIENT_SECRET) to the client the server's operator registered")
+		return errors.New("no OAuth client: set PHIAL_CLIENT_ID to the client the server's operator registered (PHIAL_CLIENT_SECRET only for a confidential client)")
 	}
 	issuer, eps, err := discoverServer(ctx, c.Server)
 	if err != nil {

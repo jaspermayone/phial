@@ -35,8 +35,10 @@ Usage:
   phial-client mcp                           local MCP server (stdio) with brief and verify
   phial-client version
 
-OAuth client: set PHIAL_CLIENT_ID and PHIAL_CLIENT_SECRET to the client the
-server's operator registered, and PHIAL_CLIENT_SCOPES to change the scopes.
+OAuth client: set PHIAL_CLIENT_ID to the client the server's operator
+registered (a public client with PKCE and device code needs no secret;
+PHIAL_CLIENT_SECRET is only for a confidential one), and PHIAL_CLIENT_SCOPES
+to change the scopes.
 Config: ~/.config/phial/client.toml (0600).
 `
 
