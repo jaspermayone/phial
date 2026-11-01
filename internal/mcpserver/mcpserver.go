@@ -79,6 +79,7 @@ func HTTPHandler(resolve func(*http.Request) (*tenant.View, error), authed bool)
 		}
 		s := New(v)
 		servers[v.Identity] = s
+		go keepAlive(context.Background(), s, keepAliveEvery)
 		return s
 	}, &mcp.StreamableHTTPOptions{DisableLocalhostProtection: authed})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -422,4 +423,32 @@ func (h *handlers) review(ctx context.Context, _ *mcp.CallToolRequest, a reviewA
 		return text("Rejected " + a.ID + "."), nil, nil
 	}
 	return fail(errors.New("action must be apply or reject"))
+}
+
+// keepAliveEvery is how often each live session gets a ping. A session's
+// standalone SSE stream carries nothing between notifications, and an idle
+// stream is cut by proxies and clients: Claude Code dropped phial's stream
+// after 720 s on 2026-11-01 and gave up after three drops.
+const keepAliveEvery = 30 * time.Second
+
+// keepAlive pings every session of s on a timer until ctx ends. A ping is a
+// server-to-client request, so it travels the SSE stream and keeps it busy.
+// A session with no open stream times out quietly.
+func keepAlive(ctx context.Context, s *mcp.Server, every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			for ss := range s.Sessions() {
+				go func(ss *mcp.ServerSession) {
+					pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+					defer cancel()
+					_ = ss.Ping(pctx, nil)
+				}(ss)
+			}
+		}
+	}
 }
