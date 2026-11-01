@@ -82,7 +82,7 @@ func main() {
 }
 
 func manager() (*config.Config, *tenant.Manager, error) {
-	cfg, err := config.Load()
+	cfg, err := config.LoadAdmin()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -105,7 +105,11 @@ func viewFor(cfg *config.Config, m *tenant.Manager, user string) (*tenant.View, 
 }
 
 func serve(ctx context.Context) error {
-	cfg, m, err := manager()
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	m, err := tenant.New(cfg.DataDir, cfg.Ranking, cfg.Pools, cfg.Auth.AllowedUsers)
 	if err != nil {
 		return err
 	}

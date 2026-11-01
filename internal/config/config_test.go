@@ -15,9 +15,16 @@ const tok = "0123456789abcdef0123456789abcdef"
 func env(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
 
 func TestDefaultsNeedAToken(t *testing.T) {
-	_, err := load(filepath.Join(t.TempDir(), "missing.toml"), env(nil))
-	if err == nil || !strings.Contains(err.Error(), "token") {
+	c, err := load(filepath.Join(t.TempDir(), "missing.toml"), env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.validate(); err == nil || !strings.Contains(err.Error(), "token") {
 		t.Fatalf("err = %v, want a token error", err)
+	}
+	// Admin commands do not need the auth settings.
+	if err := c.Ranking.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -35,6 +42,9 @@ floor = 0.25
 `), 0o600)
 	c, err := load(path, env(map[string]string{"PHIAL_TOKEN": tok, "PHIAL_PUBLIC_URL": "https://phial.hogwarts.dev", "XDG_DATA_HOME": dir}))
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.validate(); err != nil {
 		t.Fatal(err)
 	}
 	if c.Addr != "127.0.0.1:9000" || c.Auth.Token != tok || !c.SecureCookies() {
@@ -66,10 +76,12 @@ func TestTokenFile(t *testing.T) {
 
 func TestNoneOnlyOnLoopback(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := load(filepath.Join(dir, "x.toml"), env(map[string]string{"PHIAL_AUTH": "none"})); err != nil {
+	c, _ := load(filepath.Join(dir, "x.toml"), env(map[string]string{"PHIAL_AUTH": "none"}))
+	if err := c.validate(); err != nil {
 		t.Fatalf("none on default loopback addr: %v", err)
 	}
-	if _, err := load(filepath.Join(dir, "x.toml"), env(map[string]string{"PHIAL_AUTH": "none", "PHIAL_ADDR": ":7480"})); err == nil {
+	c, _ = load(filepath.Join(dir, "x.toml"), env(map[string]string{"PHIAL_AUTH": "none", "PHIAL_ADDR": ":7480"}))
+	if err := c.validate(); err == nil {
 		t.Fatal("none on all interfaces accepted")
 	}
 }
@@ -94,7 +106,8 @@ func TestOAuthModeNeedsIssuerAndClient(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "x.toml")
 	env1 := env(map[string]string{"PHIAL_AUTH": "oauth", "PHIAL_PUBLIC_URL": "https://p.example", "PHIAL_TOKEN": tok})
-	if _, err := load(path, env1); err == nil || !strings.Contains(err.Error(), "issuer") {
+	c0, _ := load(path, env1)
+	if err := c0.validate(); err == nil || !strings.Contains(err.Error(), "issuer") {
 		t.Fatalf("missing issuer: %v", err)
 	}
 	os.WriteFile(path, []byte(`

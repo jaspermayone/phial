@@ -110,7 +110,23 @@ func xdg(env, fallback string) string {
 // Load reads the config file (a missing file is fine), applies env
 // overrides and defaults, and validates the result.
 func Load() (*Config, error) {
-	return load(Path(), os.Getenv)
+	c, err := load(Path(), os.Getenv)
+	if err != nil {
+		return nil, err
+	}
+	return c, c.validate()
+}
+
+// LoadAdmin is Load for the admin commands (import, extract, users,
+// rank-report, purge). They open the stores directly and never check a
+// caller, so the auth settings are not validated: an operator can run them
+// as the service user without the OAuth secret or the UI token.
+func LoadAdmin() (*Config, error) {
+	c, err := load(Path(), os.Getenv)
+	if err != nil {
+		return nil, err
+	}
+	return c, c.Ranking.Validate()
 }
 
 func readSecret(path string) (string, error) {
@@ -208,7 +224,7 @@ func load(path string, getenv func(string) string) (*Config, error) {
 		c.LLM.BaseURL = "https://openrouter.ai/api/v1"
 	}
 	c.Ranking = c.Ranking.Merge()
-	return c, c.validate()
+	return c, nil
 }
 
 func splitList(s string) []string {
