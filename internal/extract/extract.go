@@ -295,6 +295,11 @@ func (w *Worker) Pass(ctx context.Context) {
 				continue
 			}
 			res, err := Session(ctx, w.Client, v, se)
+			if ctx.Err() != nil {
+				// Shutting down mid-call: leave the session pending for the
+				// next start instead of marking it failed.
+				return
+			}
 			errText := ""
 			if err != nil {
 				errText = err.Error()

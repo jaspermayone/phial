@@ -1472,6 +1472,17 @@ func tsOrEmpty(t time.Time) string {
 	return ts(t)
 }
 
+// RequeueFailedSessions clears the extraction mark on sessions whose last
+// extraction ended in an error, so the next pass tries them again.
+func (s *Store) RequeueFailedSessions(ctx context.Context) (int, error) {
+	r, err := s.db.ExecContext(ctx, `UPDATE sessions SET extracted_at='', extract_error='' WHERE extracted_at != '' AND extract_error != ''`)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := r.RowsAffected()
+	return int(n), nil
+}
+
 // PendingSessions returns sessions not yet extracted, oldest first.
 func (s *Store) PendingSessions(ctx context.Context, limit int) ([]Session, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, source, repo, path, checkpoint_id, commit_sha, uploaded_by, turns, started_at, ended_at, uploaded_at, extracted_at, extract_error

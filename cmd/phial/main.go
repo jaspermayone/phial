@@ -36,7 +36,9 @@ Usage:
                     [--token-file F]   bearer token for --url (or LARD_TOKEN)
                     [--user ID]        the identity to import into (default: primary_user)
                     [--apply]          write; without it the import is a dry run
-  phial extract [--user ID]            run one extraction pass now
+  phial extract [--user ID] [--retry-failed]
+                                       run one extraction pass now; --retry-failed first
+                                       requeues sessions whose last extraction failed
   phial review-triage [--user ID] [--apply]
                                        re-sort pending proposals: same text confirms the
                                        phial, a sibling fact becomes a new phial
@@ -238,6 +240,7 @@ func importCmd(ctx context.Context, args []string) error {
 func extractCmd(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("extract", flag.ContinueOnError)
 	user := userFlag(fs)
+	retry := fs.Bool("retry-failed", false, "requeue sessions whose last extraction failed")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -253,6 +256,13 @@ func extractCmd(ctx context.Context, args []string) error {
 	v, err := viewFor(cfg, m, *user)
 	if err != nil {
 		return err
+	}
+	if *retry {
+		n, err := v.Own.RequeueFailedSessions(ctx)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%d failed session(s) requeued\n", n)
 	}
 	pending, err := v.Own.PendingSessions(ctx, 500)
 	if err != nil {
