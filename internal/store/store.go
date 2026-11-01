@@ -1704,7 +1704,7 @@ func (s *Store) Near(ctx context.Context, subject, text string) (*Phial, float64
 // A restatement that adds detail has high coverage and low containment; a
 // sibling fact that only shares a few terms has low coverage.
 func Compare(target, candidate string) (coverage, containment float64) {
-	wt, wc := wordSet(target), wordSet(candidate)
+	wt, wc := contentWords(target), contentWords(candidate)
 	if len(wt) == 0 || len(wc) == 0 {
 		return 0, 0
 	}
@@ -1715,6 +1715,33 @@ func Compare(target, candidate string) (coverage, containment float64) {
 		}
 	}
 	return float64(n) / float64(len(wt)), float64(n) / float64(len(wc))
+}
+
+// stopwords are left out of Compare: they are shared by every sentence and
+// would make any short candidate look contained in a long phial.
+var stopwords = map[string]bool{
+	"the": true, "and": true, "for": true, "with": true, "that": true, "this": true,
+	"are": true, "not": true, "from": true, "into": true, "when": true, "then": true,
+	"than": true, "has": true, "have": true, "its": true, "was": true, "were": true,
+	"which": true, "also": true, "only": true, "each": true, "all": true, "any": true,
+	"can": true, "use": true, "used": true, "uses": true, "run": true, "runs": true,
+	"via": true, "per": true, "one": true, "but": true, "you": true, "your": true,
+	"they": true, "them": true, "there": true, "here": true, "will": true, "must": true,
+	"should": true, "does": true, "did": true, "been": true, "being": true, "where": true,
+	"what": true, "how": true, "who": true, "about": true, "after": true, "before": true,
+	"under": true, "over": true, "out": true, "off": true, "own": true, "same": true,
+	"such": true, "both": true, "between": true, "through": true, "during": true,
+	"because": true, "while": true, "still": true, "just": true, "very": true, "more": true,
+	"most": true, "other": true, "some": true, "these": true, "those": true, "jasper": true,
+}
+
+// contentWords is wordSet without the stopwords.
+func contentWords(s string) map[string]bool {
+	out := wordSet(s)
+	for w := range stopwords {
+		delete(out, w)
+	}
+	return out
 }
 
 func overlap(a, b string) float64 {

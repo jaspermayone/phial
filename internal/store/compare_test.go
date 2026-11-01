@@ -11,6 +11,8 @@ func TestCompare(t *testing.T) {
 		minCont        float64
 	}{
 		{"same text", target, 0.99, 1, 0.99},
+		{"a part of the target", "Config lives in jaspermayone/dots under hosts/mrm-prod.", 0.2, 0.5, 0.99},
+		{"stopwords only", "the and for with that this", 0, 0, 0},
 		{"restates and adds", target + " The staging VM is mrm-staging on the same tailnet.", 0.99, 1, 0.5},
 		{"sibling fact", "Staging for MentorDB is the tailnet host mrm-staging.wildebeest-stargazer.ts.net, reached via ssh -J alastor.", 0, 0.5, 0},
 		{"unrelated", "COMP2100 coursework lives in the private repo jaspermayone/wit-f26-comp2100.", 0, 0.1, 0},

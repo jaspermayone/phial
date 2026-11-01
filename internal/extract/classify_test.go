@@ -11,7 +11,8 @@ func TestClassify(t *testing.T) {
 		{0.95, 0.92, "confirm"}, // reworded, same content
 		{1, 0.5, "propose"},     // restates the target and adds detail
 		{0.75, 0.6, "propose"},  // mostly the target, some change
-		{0.6, 0.9, "new"},       // a short sibling fact made of the target's words
+		{0.6, 0.9, "confirm"},   // a part of the target, restated: nothing new
+		{0.6, 0.6, "new"},       // a sibling fact made partly of the target's words
 		{0.3, 0.4, "new"},       // shares a few terms only
 		{0, 0, "new"},           // nothing near
 	}

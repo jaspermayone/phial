@@ -24,13 +24,13 @@ const Actor = "extract"
 // nearest phial's words the candidate has) and containment (share of the
 // candidate's words the phial has).
 const (
-	// sameAt: coverage and containment both this high means the candidate
-	// says what the phial says; it confirms the phial.
+	// sameAt: containment this high means the phial already says what the
+	// candidate says (the candidate is the phial, or a part of it); the
+	// candidate confirms the phial.
 	sameAt = 0.9
 	// extendsAt: coverage this high means the candidate restates the phial
 	// and changes or adds something; it becomes a proposal for review.
-	// Below it the candidate is a sibling fact and becomes a new phial, even
-	// when it is short and made of the phial's words.
+	// Below it the candidate is a sibling fact and becomes a new phial.
 	extendsAt = 0.7
 )
 
@@ -38,7 +38,7 @@ const (
 // against the nearest phial: "confirm", "propose" or "new".
 func Classify(coverage, containment float64) string {
 	switch {
-	case coverage >= sameAt && containment >= sameAt:
+	case containment >= sameAt:
 		return "confirm"
 	case coverage >= extendsAt:
 		return "propose"
