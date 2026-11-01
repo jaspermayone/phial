@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jaspermayone/phial/internal/client"
+	"github.com/jaspermayone/phial/internal/store"
 )
 
 var version = "dev"
@@ -29,6 +30,8 @@ Usage:
   phial-client service install|uninstall|status
   phial-client verify [DIR]                  check this repo's code anchors
   phial-client brief "task" [--dir DIR]      context for a task
+  phial-client remember --subject S "text"   store one phial (--kind, --path, --locus repeatable)
+  phial-client recall "words" [--subject S]  search phials
   phial-client mcp                           local MCP server (stdio) with brief and verify
   phial-client version
 
@@ -207,6 +210,62 @@ func run(ctx context.Context, cmd string, args []string) error {
 			return err
 		}
 		fmt.Print(out)
+		return nil
+	case "remember":
+		fs := flag.NewFlagSet("remember", flag.ContinueOnError)
+		subject := fs.String("subject", "", "profile, areas/<name>, topics/<name> or people/<name>")
+		kind := fs.String("kind", "fact", "decision, invariant, gotcha, preference, convention or fact")
+		desc := fs.String("description", "", "subject description, only when this makes a new subject")
+		var paths, lociArgs multi
+		fs.Var(&paths, "path", "dotted path (repeatable)")
+		fs.Var(&lociArgs, "locus", "code anchor file#symbol (repeatable)")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		text := strings.Join(fs.Args(), " ")
+		if *subject == "" || strings.TrimSpace(text) == "" {
+			return errors.New("usage: phial-client remember --subject areas/<name> [--kind K] [--path P] \"one durable statement\"")
+		}
+		var loci []store.Locus
+		for _, l := range lociArgs {
+			loci = append(loci, store.ParseLocus(l))
+		}
+		dir, _ := os.Getwd()
+		p, created, err := api.Remember(ctx, store.RememberInput{
+			Subject: *subject, Kind: *kind, Text: text, Paths: paths, Loci: loci, Description: *desc,
+			Provenance: store.Provenance{Repo: client.GitRemote(dir), Source: "phial-client on " + client.Hostname()},
+		})
+		if err != nil {
+			return err
+		}
+		verb := "Remembered"
+		if !created {
+			verb = "Already known; confirmed"
+		}
+		fmt.Printf("%s %s in %s\n", verb, p.ID, p.Subject)
+		return nil
+	case "recall":
+		fs := flag.NewFlagSet("recall", flag.ContinueOnError)
+		subject := fs.String("subject", "", "limit to a subject")
+		kind := fs.String("kind", "", "limit to a kind")
+		limit := fs.Int("limit", 10, "maximum results")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		rs, err := api.Recall(ctx, store.Query{Text: strings.Join(fs.Args(), " "), Subject: *subject, Kind: *kind, Limit: *limit})
+		if err != nil {
+			return err
+		}
+		for _, r := range rs {
+			pool := ""
+			if r.Pool != "" {
+				pool = " (shared: " + r.Pool + ")"
+			}
+			fmt.Printf("- [%s] (%s) %s · %s%s\n", r.ID, r.Kind, r.Text, r.Subject, pool)
+		}
+		if len(rs) == 0 {
+			fmt.Println("No phials match.")
+		}
 		return nil
 	case "mcp":
 		return client.ServeMCP(ctx, api, version)

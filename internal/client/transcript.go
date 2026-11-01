@@ -165,6 +165,9 @@ func gitRemote(dir string) string {
 	return r
 }
 
+// GitRemote is the origin remote of a checkout, or "".
+func GitRemote(dir string) string { return gitRemote(dir) }
+
 // checkpointFor finds the last commit made in dir during the session, and
 // its Entire-Checkpoint trailer if it has one. Entire writes that trailer
 // on every commit it links to a checkpoint, so the session gets the link
