@@ -26,7 +26,7 @@
             pname = "phial";
             inherit version;
             src = ./.;
-            vendorHash = "sha256-7KNOhuHTDkZv99iITkUm4WImkC4R/4xkZ22W8kfdpBU=";
+            vendorHash = "sha256-5bWni1buB1xh/UDLVz7i/mGG9GuU1wTkVlSGpVLVMKI=";
             subPackages = [
               "cmd/phial"
               "cmd/phial-client"
