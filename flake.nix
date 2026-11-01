@@ -13,7 +13,7 @@
         "x86_64-darwin"
       ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
-      version = "0.1.1";
+      version = "0.1.2";
     in
     {
       packages = forAllSystems (

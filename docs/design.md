@@ -318,10 +318,16 @@ Rules:
 
 ### 7.2 Proposals and review
 
-Extraction (section 8) never edits an active phial. When a candidate restates one (same text) it
-confirms it. When a candidate is close to one (word overlap of 0.6 or more) it files a
-**proposal**: a supersede that waits for a person. `review` (MCP) and the Proposals page (UI)
-list them with a diff; apply supersedes the target, reject keeps it. Both are ledger rows.
+Extraction (section 8) never edits an active phial. It compares each candidate with the nearest
+phial in its subject by words: *coverage* is the share of the phial's words the candidate has,
+*containment* the share of the candidate's words the phial has. Coverage and containment both at
+0.9 or more: the candidate says the same thing, so it confirms the phial. Coverage at 0.7 or
+more: the candidate restates the phial and changes or adds something, so it files a **proposal**:
+a supersede that waits for a person. Anything else is a sibling fact and becomes a new phial,
+even a short one made of the phial's words. (The first rule, shared words over the smaller set at
+0.6, turned partial restatements of long phials into proposals; `phial review-triage` re-sorts
+proposals made under it.) `review` (MCP) and the Proposals page (UI) list proposals with a diff;
+apply supersedes the target, reject keeps it. Both are ledger rows.
 
 ## 8. Write path: sessions
 

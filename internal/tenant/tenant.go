@@ -692,3 +692,13 @@ func (v *View) Purge(ctx context.Context, id, reason string) error {
 	}
 	return src.Store.Purge(ctx, id, reason, v.Identity)
 }
+
+// ConfirmAs is Confirm with an explicit ledger actor, for server-side
+// processes such as extraction that act inside a person's view.
+func (v *View) ConfirmAs(ctx context.Context, id, actor string) (*store.Phial, error) {
+	src, err := v.writable(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return src.Store.Confirm(ctx, id, actor)
+}

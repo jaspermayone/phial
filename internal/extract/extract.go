@@ -20,9 +20,31 @@ import (
 // Actor is the ledger name for extraction.
 const Actor = "extract"
 
-// closeEnough is the word overlap at which a candidate is a proposal to
-// change an existing phial rather than a new one.
-const closeEnough = 0.6
+// Classification thresholds, on store.Compare's coverage (share of the
+// nearest phial's words the candidate has) and containment (share of the
+// candidate's words the phial has).
+const (
+	// sameAt: coverage and containment both this high means the candidate
+	// says what the phial says; it confirms the phial.
+	sameAt = 0.9
+	// extendsAt: coverage this high means the candidate restates the phial
+	// and changes or adds something; it becomes a proposal for review.
+	// Below it the candidate is a sibling fact and becomes a new phial, even
+	// when it is short and made of the phial's words.
+	extendsAt = 0.7
+)
+
+// Classify says what to do with a candidate given its Compare numbers
+// against the nearest phial: "confirm", "propose" or "new".
+func Classify(coverage, containment float64) string {
+	switch {
+	case coverage >= sameAt && containment >= sameAt:
+		return "confirm"
+	case coverage >= extendsAt:
+		return "propose"
+	}
+	return "new"
+}
 
 // sensitivityBlocklist holds categories never persisted.
 var sensitivityBlocklist = map[string]bool{
@@ -97,7 +119,9 @@ func Session(ctx context.Context, client *llm.Client, v *tenant.View, se store.S
 	if prompt == "" {
 		return res, nil
 	}
-	raw, err := client.Complete(ctx, system, prompt, 8192)
+	// A long session can yield dozens of candidates; 8k tokens cut one reply
+	// mid-array on 2026-11-01.
+	raw, err := client.Complete(ctx, system, prompt, 16384)
 	if err != nil {
 		return res, err
 	}
@@ -118,22 +142,32 @@ func Session(ctx context.Context, client *llm.Client, v *tenant.View, se store.S
 			res.Dropped++
 			continue
 		}
-		near, score, err := v.Near(ctx, subject, text)
+		near, _, err := v.Near(ctx, subject, text)
 		if err != nil {
 			return res, err
 		}
-		if near != nil && score >= closeEnough && near.Text != text {
-			if _, err := v.Propose(ctx, store.Proposal{
-				TargetID: near.ID, Text: text, Kind: c.Kind, Paths: c.Paths,
-				Reason:    fmt.Sprintf("extracted from session %s, %d%% word overlap", se.ID, int(score*100)),
-				SessionID: se.ID, ProposedBy: Actor,
-			}); err != nil {
-				slog.Warn("extract: propose failed", "session", se.ID, "error", err)
-				res.Dropped++
+		if near != nil && near.Text != text {
+			cov, cont := store.Compare(near.Text, text)
+			switch Classify(cov, cont) {
+			case "confirm":
+				if _, err := v.ConfirmAs(ctx, near.ID, Actor); err != nil {
+					slog.Warn("extract: confirm failed", "session", se.ID, "error", err)
+				}
+				res.Confirmed++
+				continue
+			case "propose":
+				if _, err := v.Propose(ctx, store.Proposal{
+					TargetID: near.ID, Text: text, Kind: c.Kind, Paths: c.Paths,
+					Reason:    fmt.Sprintf("extracted from session %s; restates %d%% of the phial", se.ID, int(cov*100)),
+					SessionID: se.ID, ProposedBy: Actor,
+				}); err != nil {
+					slog.Warn("extract: propose failed", "session", se.ID, "error", err)
+					res.Dropped++
+					continue
+				}
+				res.Proposed++
 				continue
 			}
-			res.Proposed++
-			continue
 		}
 		_, created, err := v.Remember(ctx, store.RememberInput{
 			Subject: subject, Kind: c.Kind, Text: text, Paths: c.Paths, Description: c.Description,

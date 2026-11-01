@@ -1686,6 +1686,26 @@ func (s *Store) Near(ctx context.Context, subject, text string) (*Phial, float64
 	return best, score, nil
 }
 
+// Compare measures a candidate text against a target phial's text by their
+// words. Coverage is the share of the target's words the candidate has: high
+// when the candidate restates the target. Containment is the share of the
+// candidate's words the target has: high when the candidate adds nothing.
+// A restatement that adds detail has high coverage and low containment; a
+// sibling fact that only shares a few terms has low coverage.
+func Compare(target, candidate string) (coverage, containment float64) {
+	wt, wc := wordSet(target), wordSet(candidate)
+	if len(wt) == 0 || len(wc) == 0 {
+		return 0, 0
+	}
+	n := 0
+	for w := range wt {
+		if wc[w] {
+			n++
+		}
+	}
+	return float64(n) / float64(len(wt)), float64(n) / float64(len(wc))
+}
+
 func overlap(a, b string) float64 {
 	wa, wb := wordSet(a), wordSet(b)
 	if len(wa) == 0 || len(wb) == 0 {

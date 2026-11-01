@@ -37,6 +37,9 @@ Usage:
                     [--user ID]        the identity to import into (default: primary_user)
                     [--apply]          write; without it the import is a dry run
   phial extract [--user ID]            run one extraction pass now
+  phial review-triage [--user ID] [--apply]
+                                       re-sort pending proposals: same text confirms the
+                                       phial, a sibling fact becomes a new phial
   phial users                          list identities that have a store
   phial rank-report [--user ID] [--limit N]
   phial purge ID --reason TEXT [--user ID]
@@ -61,6 +64,8 @@ func main() {
 		err = importCmd(ctx, os.Args[2:])
 	case "extract":
 		err = extractCmd(ctx, os.Args[2:])
+	case "review-triage":
+		err = triageCmd(ctx, os.Args[2:])
 	case "users":
 		err = users()
 	case "rank-report":
@@ -349,5 +354,34 @@ func purge(ctx context.Context, args []string) error {
 		return err
 	}
 	fmt.Printf("Purged %s. The audit line has the ID, the time and the reason, not the text.\n", id)
+	return nil
+}
+
+func triageCmd(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("review-triage", flag.ContinueOnError)
+	user := userFlag(fs)
+	apply := fs.Bool("apply", false, "resolve the proposals; without it only count")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, m, err := manager()
+	if err != nil {
+		return err
+	}
+	defer m.Close()
+	v, err := viewFor(cfg, m, *user)
+	if err != nil {
+		return err
+	}
+	res, err := extract.Triage(ctx, v, *apply, func(f string, a ...any) { fmt.Printf("  "+f+"\n", a...) })
+	if err != nil {
+		return err
+	}
+	mode := "would be"
+	if *apply {
+		mode = "were"
+	}
+	fmt.Printf("%d pending: %d kept as proposals, %d %s rejected and their phial confirmed, %d %s remembered as new phials, %d skipped\n",
+		res.Pending, res.Kept, res.Confirmed, mode, res.New, mode, res.Skipped)
 	return nil
 }
