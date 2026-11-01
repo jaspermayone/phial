@@ -8,10 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/jaspermayone/phial/internal/rank"
+	"github.com/jaspermayone/phial/internal/tenant"
 )
 
 // Config is the server config.
@@ -19,25 +21,70 @@ type Config struct {
 	// Addr is the listen address. The default is loopback only: put a
 	// reverse proxy in front for remote access.
 	Addr string `toml:"addr"`
-	// DB is the SQLite file.
-	DB string `toml:"db"`
+	// DataDir holds every store: users/<id>/phial.db and pools/<name>/phial.db.
+	DataDir string `toml:"data_dir"`
 	// PublicURL is the external URL, e.g. https://phial.hogwarts.dev. When
 	// it is https, UI cookies are marked Secure.
-	PublicURL string      `toml:"public_url"`
-	Auth      Auth        `toml:"auth"`
-	Ranking   rank.Config `toml:"ranking"`
+	PublicURL string `toml:"public_url"`
+	// PrimaryUser is the identity that token sign-ins, mode none, and the
+	// CLI act as.
+	PrimaryUser string        `toml:"primary_user"`
+	Auth        Auth          `toml:"auth"`
+	Pools       []tenant.Pool `toml:"pools"`
+	LLM         LLM           `toml:"llm"`
+	Extract     Extract       `toml:"extract"`
+	Ranking     rank.Config   `toml:"ranking"`
 }
 
 // Auth selects how callers prove who they are.
 type Auth struct {
-	// Mode is "token" (default) or "none". "none" is for local testing on
-	// a loopback address only.
+	// Mode is "token" (default), "oauth", or "none" (loopback only).
 	Mode string `toml:"mode"`
-	// Token is the shared bearer token. Prefer TokenFile or PHIAL_TOKEN so
-	// the secret is not in the config file.
-	Token string `toml:"token"`
-	// TokenFile is a file that holds the token, e.g. an agenix secret path.
+	// Token is the shared bearer token for mode token, and the UI's
+	// password when ui_login is token. Prefer TokenFile or PHIAL_TOKEN.
+	Token     string `toml:"token"`
 	TokenFile string `toml:"token_file"`
+	// AllowedUsers are the identities (OAuth sub) that may use phial. Empty
+	// means anyone the authorization server vouches for.
+	AllowedUsers []string `toml:"allowed_users"`
+	// OAuth settings, for mode oauth.
+	Issuer            string   `toml:"issuer"`
+	IntrospectionURL  string   `toml:"introspection_url"`
+	ClientID          string   `toml:"client_id"`
+	ClientSecret      string   `toml:"client_secret"`
+	ClientSecretFile  string   `toml:"client_secret_file"`
+	AcceptedAudiences []string `toml:"accepted_audiences"`
+	RequiredScopes    []string `toml:"required_scopes"`
+	// UILogin is "token" (default) or "oauth": how the browser UI signs in.
+	// "oauth" needs <public_url>/auth/callback registered on the provider.
+	UILogin string `toml:"ui_login"`
+}
+
+// LLM is the OpenAI-compatible endpoint extraction uses. Empty disables it.
+type LLM struct {
+	BaseURL    string `toml:"base_url"`
+	Model      string `toml:"model"`
+	APIKey     string `toml:"api_key"`
+	APIKeyFile string `toml:"api_key_file"`
+}
+
+// Extract tunes the background worker.
+type Extract struct {
+	Interval Duration `toml:"interval"` // how often to look; default 1m
+	Quiet    Duration `toml:"quiet"`    // how long a session must sit first; default 5m
+}
+
+// Duration reads Go durations from TOML.
+type Duration time.Duration
+
+// UnmarshalText reads a Go duration.
+func (d *Duration) UnmarshalText(b []byte) error {
+	v, err := time.ParseDuration(string(b))
+	if err != nil {
+		return err
+	}
+	*d = Duration(v)
+	return nil
 }
 
 // Path returns the config file path: PHIAL_CONFIG, else
@@ -66,6 +113,14 @@ func Load() (*Config, error) {
 	return load(Path(), os.Getenv)
 }
 
+func readSecret(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+
 func load(path string, getenv func(string) string) (*Config, error) {
 	c := &Config{}
 	b, err := os.ReadFile(path)
@@ -83,40 +138,87 @@ func load(path string, getenv func(string) string) (*Config, error) {
 	}
 
 	for env, dst := range map[string]*string{
-		"PHIAL_ADDR":       &c.Addr,
-		"PHIAL_DB":         &c.DB,
-		"PHIAL_PUBLIC_URL": &c.PublicURL,
-		"PHIAL_AUTH":       &c.Auth.Mode,
-		"PHIAL_TOKEN":      &c.Auth.Token,
-		"PHIAL_TOKEN_FILE": &c.Auth.TokenFile,
+		"PHIAL_ADDR":                     &c.Addr,
+		"PHIAL_DATA_DIR":                 &c.DataDir,
+		"PHIAL_PUBLIC_URL":               &c.PublicURL,
+		"PHIAL_PRIMARY_USER":             &c.PrimaryUser,
+		"PHIAL_AUTH":                     &c.Auth.Mode,
+		"PHIAL_TOKEN":                    &c.Auth.Token,
+		"PHIAL_TOKEN_FILE":               &c.Auth.TokenFile,
+		"PHIAL_OAUTH_ISSUER":             &c.Auth.Issuer,
+		"PHIAL_OAUTH_INTROSPECTION_URL":  &c.Auth.IntrospectionURL,
+		"PHIAL_OAUTH_CLIENT_ID":          &c.Auth.ClientID,
+		"PHIAL_OAUTH_CLIENT_SECRET":      &c.Auth.ClientSecret,
+		"PHIAL_OAUTH_CLIENT_SECRET_FILE": &c.Auth.ClientSecretFile,
+		"PHIAL_UI_LOGIN":                 &c.Auth.UILogin,
+		"PHIAL_LLM_BASE_URL":             &c.LLM.BaseURL,
+		"PHIAL_LLM_MODEL":                &c.LLM.Model,
+		"PHIAL_LLM_API_KEY":              &c.LLM.APIKey,
+		"PHIAL_LLM_API_KEY_FILE":         &c.LLM.APIKeyFile,
 	} {
 		if v := getenv(env); v != "" {
 			*dst = v
+		}
+	}
+	for env, dst := range map[string]*[]string{
+		"PHIAL_ALLOWED_USERS":      &c.Auth.AllowedUsers,
+		"PHIAL_ACCEPTED_AUDIENCES": &c.Auth.AcceptedAudiences,
+		"PHIAL_REQUIRED_SCOPES":    &c.Auth.RequiredScopes,
+	} {
+		if v := getenv(env); v != "" {
+			*dst = splitList(v)
 		}
 	}
 
 	if c.Addr == "" {
 		c.Addr = "127.0.0.1:7480"
 	}
-	if c.DB == "" {
+	if c.DataDir == "" {
 		dataHome := getenv("XDG_DATA_HOME")
 		if dataHome == "" {
 			dataHome = xdg("XDG_DATA_HOME", filepath.Join(".local", "share"))
 		}
-		c.DB = filepath.Join(dataHome, "phial", "phial.db")
+		c.DataDir = filepath.Join(dataHome, "phial")
 	}
 	if c.Auth.Mode == "" {
 		c.Auth.Mode = "token"
 	}
+	if c.Auth.UILogin == "" {
+		c.Auth.UILogin = "token"
+	}
+	if c.PrimaryUser == "" {
+		c.PrimaryUser = "local"
+	}
 	if c.Auth.Token == "" && c.Auth.TokenFile != "" {
-		tok, err := os.ReadFile(c.Auth.TokenFile)
-		if err != nil {
+		if c.Auth.Token, err = readSecret(c.Auth.TokenFile); err != nil {
 			return nil, fmt.Errorf("auth.token_file: %w", err)
 		}
-		c.Auth.Token = strings.TrimSpace(string(tok))
+	}
+	if c.Auth.ClientSecret == "" && c.Auth.ClientSecretFile != "" {
+		if c.Auth.ClientSecret, err = readSecret(c.Auth.ClientSecretFile); err != nil {
+			return nil, fmt.Errorf("auth.client_secret_file: %w", err)
+		}
+	}
+	if c.LLM.APIKey == "" && c.LLM.APIKeyFile != "" {
+		if c.LLM.APIKey, err = readSecret(c.LLM.APIKeyFile); err != nil {
+			return nil, fmt.Errorf("llm.api_key_file: %w", err)
+		}
+	}
+	if c.LLM.BaseURL == "" && c.LLM.APIKey != "" {
+		c.LLM.BaseURL = "https://openrouter.ai/api/v1"
 	}
 	c.Ranking = c.Ranking.Merge()
 	return c, c.validate()
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func (c *Config) validate() error {
@@ -124,6 +226,19 @@ func (c *Config) validate() error {
 	case "token":
 		if len(c.Auth.Token) < 32 {
 			return errors.New("auth: token mode needs a token of at least 32 characters (PHIAL_TOKEN, PHIAL_TOKEN_FILE or auth.token); make one with `openssl rand -hex 32`")
+		}
+	case "oauth":
+		if c.Auth.Issuer == "" {
+			return errors.New("auth: oauth mode needs auth.issuer (PHIAL_OAUTH_ISSUER)")
+		}
+		if c.Auth.ClientID == "" {
+			return errors.New("auth: oauth mode needs auth.client_id (PHIAL_OAUTH_CLIENT_ID) for introspection")
+		}
+		if c.PublicURL == "" {
+			return errors.New("auth: oauth mode needs public_url")
+		}
+		if c.Auth.UILogin == "token" && len(c.Auth.Token) < 32 {
+			return errors.New("auth: the UI signs in with a token (ui_login = token), so set a token of at least 32 characters, or set ui_login = oauth")
 		}
 	case "none":
 		host := c.Addr
@@ -134,7 +249,18 @@ func (c *Config) validate() error {
 			return fmt.Errorf("auth: mode none is only allowed on a loopback address, not %q", c.Addr)
 		}
 	default:
-		return fmt.Errorf("auth: unknown mode %q (token or none)", c.Auth.Mode)
+		return fmt.Errorf("auth: unknown mode %q (token, oauth or none)", c.Auth.Mode)
+	}
+	switch c.Auth.UILogin {
+	case "token", "oauth":
+	default:
+		return fmt.Errorf("auth: ui_login must be token or oauth, not %q", c.Auth.UILogin)
+	}
+	if c.Auth.UILogin == "oauth" && c.Auth.Mode != "oauth" {
+		return errors.New("auth: ui_login = oauth needs mode = oauth")
+	}
+	if c.LLM.APIKey != "" && c.LLM.Model == "" {
+		return errors.New("llm: an api key is set but no model (llm.model / PHIAL_LLM_MODEL)")
 	}
 	return c.Ranking.Validate()
 }

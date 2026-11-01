@@ -138,7 +138,8 @@ type Subject struct {
 	Kind        string    `json:"kind"`
 	Description string    `json:"description"`
 	Aliases     []string  `json:"aliases"`
-	Active      int       `json:"active"` // active phials, filled by ListSubjects
+	Active      int       `json:"active"`         // active phials, filled by ListSubjects
+	Pool        string    `json:"pool,omitempty"` // set by a view
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
@@ -187,6 +188,8 @@ type Phial struct {
 	Supersedes    string       `json:"supersedes,omitempty"`
 	SupersededBy  string       `json:"superseded_by,omitempty"`
 	RetractReason string       `json:"retract_reason,omitempty"`
+	CreatedBy     string       `json:"created_by,omitempty"`
+	Pool          string       `json:"pool,omitempty"` // set by a view: the shared pool this came from
 	CreatedAt     time.Time    `json:"created_at"`
 	UpdatedAt     time.Time    `json:"updated_at"`
 	ConfirmedAt   time.Time    `json:"confirmed_at"`
@@ -405,6 +408,7 @@ type RememberInput struct {
 	Loci        []Locus
 	Provenance  Provenance
 	Origin      string // default "authored"
+	Actor       string // who makes it: an OAuth subject, "web", "import", "extract"
 	Description string // subject description, used only when the subject is new or this is set
 	// CreatedAt overrides the creation time. Importers use it to keep the
 	// original date; zero means now.
@@ -457,6 +461,9 @@ func (s *Store) Remember(ctx context.Context, in RememberInput) (p *Phial, creat
 		if _, err := tx.Exec(`UPDATE phials SET confirmed_at=? WHERE id=?`, ts(now), existing); err != nil {
 			return nil, false, err
 		}
+		if err := logTx(tx, now, Entry{Actor: in.Actor, Action: "confirm", PhialID: existing, Subject: in.Subject, TextAfter: text, Note: "remembered again"}); err != nil {
+			return nil, false, err
+		}
 		if !in.Provenance.empty() {
 			if err := insertProvenance(tx, existing, in.Provenance, now); err != nil {
 				return nil, false, err
@@ -479,7 +486,10 @@ func (s *Store) Remember(ctx context.Context, in RememberInput) (p *Phial, creat
 		createdAt = in.CreatedAt.UTC()
 	}
 	id := newID()
-	if err := insertPhial(tx, id, in.Subject, in.Kind, text, in.Origin, "", createdAt, createdAt); err != nil {
+	if err := insertPhial(tx, id, in.Subject, in.Kind, text, in.Origin, "", in.Actor, createdAt, createdAt); err != nil {
+		return nil, false, err
+	}
+	if err := logTx(tx, now, Entry{Actor: in.Actor, Action: "remember", PhialID: id, Subject: in.Subject, TextAfter: text, Note: in.Origin}); err != nil {
 		return nil, false, err
 	}
 	if err := insertExtras(tx, id, paths, in.Loci, in.Provenance, now); err != nil {
@@ -498,14 +508,78 @@ func (s *Store) Remember(ctx context.Context, in RememberInput) (p *Phial, creat
 	return p, true, err
 }
 
-func insertPhial(tx *sql.Tx, id, subject, kind, text, origin, supersedes string, created, now time.Time) error {
+func insertPhial(tx *sql.Tx, id, subject, kind, text, origin, supersedes, actor string, created, now time.Time) error {
 	var sup any
 	if supersedes != "" {
 		sup = supersedes
 	}
-	_, err := tx.Exec(`INSERT INTO phials (id, subject, kind, text, status, origin, supersedes, created_at, updated_at, confirmed_at)
-		VALUES (?,?,?,?,'active',?,?,?,?,?)`, id, subject, kind, text, origin, sup, ts(created), ts(created), ts(now))
+	_, err := tx.Exec(`INSERT INTO phials (id, subject, kind, text, status, origin, supersedes, created_by, created_at, updated_at, confirmed_at)
+		VALUES (?,?,?,?,'active',?,?,?,?,?,?)`, id, subject, kind, text, origin, sup, actor, ts(created), ts(created), ts(now))
 	return err
+}
+
+// Entry is one ledger row: one change to one phial.
+type Entry struct {
+	Seq        int64     `json:"seq"`
+	At         time.Time `json:"at"`
+	Actor      string    `json:"actor"`
+	Action     string    `json:"action"`
+	PhialID    string    `json:"phial_id,omitempty"`
+	Subject    string    `json:"subject,omitempty"`
+	TextBefore string    `json:"text_before,omitempty"`
+	TextAfter  string    `json:"text_after,omitempty"`
+	Note       string    `json:"note,omitempty"`
+	Pool       string    `json:"pool,omitempty"` // set by a view
+}
+
+func logTx(tx *sql.Tx, now time.Time, e Entry) error {
+	_, err := tx.Exec(`INSERT INTO ledger (at, actor, action, phial_id, subject, text_before, text_after, note) VALUES (?,?,?,?,?,?,?,?)`,
+		ts(now), e.Actor, e.Action, e.PhialID, e.Subject, e.TextBefore, e.TextAfter, e.Note)
+	return err
+}
+
+// Ledger returns changes, newest first. Empty filters mean all.
+func (s *Store) Ledger(ctx context.Context, phialID, subject, actor string, limit int) ([]Entry, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	var where []string
+	var args []any
+	if phialID != "" {
+		where = append(where, `phial_id = ?`)
+		args = append(args, phialID)
+	}
+	if subject != "" {
+		sub := CleanSubject(subject)
+		where = append(where, `(subject = ? OR subject LIKE ? ESCAPE '\')`)
+		args = append(args, sub, likeEscape(sub)+"/%")
+	}
+	if actor != "" {
+		where = append(where, `actor = ?`)
+		args = append(args, actor)
+	}
+	q := `SELECT seq, at, actor, action, phial_id, subject, text_before, text_after, note FROM ledger`
+	if len(where) > 0 {
+		q += ` WHERE ` + strings.Join(where, " AND ")
+	}
+	q += ` ORDER BY seq DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Entry
+	for rows.Next() {
+		var e Entry
+		var at string
+		if err := rows.Scan(&e.Seq, &at, &e.Actor, &e.Action, &e.PhialID, &e.Subject, &e.TextBefore, &e.TextAfter, &e.Note); err != nil {
+			return nil, err
+		}
+		e.At = parseTS(at)
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 func insertExtras(tx *sql.Tx, id string, paths []string, loci []Locus, prov Provenance, now time.Time) error {
@@ -549,6 +623,8 @@ type SupersedeInput struct {
 	Loci       []Locus
 	Provenance Provenance
 	Origin     string
+	Actor      string
+	Note       string // why, for the ledger
 }
 
 // Supersede replaces an active phial with a new one and returns the new one.
@@ -596,7 +672,10 @@ func (s *Store) Supersede(ctx context.Context, in SupersedeInput) (*Phial, error
 	defer tx.Rollback()
 	now := s.Now()
 	id := newID()
-	if err := insertPhial(tx, id, old.Subject, kind, text, origin, old.ID, now, now); err != nil {
+	if err := insertPhial(tx, id, old.Subject, kind, text, origin, old.ID, in.Actor, now, now); err != nil {
+		return nil, err
+	}
+	if err := logTx(tx, now, Entry{Actor: in.Actor, Action: "supersede", PhialID: id, Subject: old.Subject, TextBefore: old.Text, TextAfter: text, Note: in.Note}); err != nil {
 		return nil, err
 	}
 	if err := insertExtras(tx, id, paths, loci, in.Provenance, now); err != nil {
@@ -619,65 +698,92 @@ func (s *Store) Supersede(ctx context.Context, in SupersedeInput) (*Phial, error
 }
 
 // Retract marks an active phial as no longer true.
-func (s *Store) Retract(ctx context.Context, id, reason string) (*Phial, error) {
+func (s *Store) Retract(ctx context.Context, id, reason, actor string) (*Phial, error) {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		return nil, fmt.Errorf("%w: a reason is required", ErrInvalid)
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE phials SET status='retracted', retract_reason=?, updated_at=? WHERE id=? AND status='active'`,
-		reason, ts(s.Now()), id)
-	if err != nil {
-		return nil, err
-	}
-	if n, _ := res.RowsAffected(); n != 1 {
-		if _, err := s.Get(ctx, id); err != nil {
-			return nil, err
-		}
-		return nil, fmt.Errorf("%s: %w", id, ErrNotActive)
-	}
-	return s.Get(ctx, id)
+	return s.updateActive(ctx, id, actor, "retract", reason,
+		`UPDATE phials SET status='retracted', retract_reason=?, updated_at=? WHERE id=? AND status='active'`,
+		func(now time.Time) []any { return []any{reason, ts(now), id} })
 }
 
 // Confirm records that an active phial is still true.
-func (s *Store) Confirm(ctx context.Context, id string) (*Phial, error) {
-	res, err := s.db.ExecContext(ctx, `UPDATE phials SET confirmed_at=? WHERE id=? AND status='active'`, ts(s.Now()), id)
+func (s *Store) Confirm(ctx context.Context, id, actor string) (*Phial, error) {
+	return s.updateActive(ctx, id, actor, "confirm", "",
+		`UPDATE phials SET confirmed_at=? WHERE id=? AND status='active'`,
+		func(now time.Time) []any { return []any{ts(now), id} })
+}
+
+// updateActive runs one UPDATE on an active phial and logs it.
+func (s *Store) updateActive(ctx context.Context, id, actor, action, note, q string, args func(time.Time) []any) (*Phial, error) {
+	old, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if old.Status != StatusActive {
+		return nil, fmt.Errorf("%s: %w", id, ErrNotActive)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	now := s.Now()
+	res, err := tx.Exec(q, args(now)...)
 	if err != nil {
 		return nil, err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		if _, err := s.Get(ctx, id); err != nil {
-			return nil, err
-		}
 		return nil, fmt.Errorf("%s: %w", id, ErrNotActive)
+	}
+	if err := logTx(tx, now, Entry{Actor: actor, Action: action, PhialID: id, Subject: old.Subject, TextBefore: old.Text, Note: note}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
 	}
 	return s.Get(ctx, id)
 }
 
 // SetVerify records a verify result. "ok" also confirms the phial.
-func (s *Store) SetVerify(ctx context.Context, id, state, note string) (*Phial, error) {
+func (s *Store) SetVerify(ctx context.Context, id, state, note, actor string) (*Phial, error) {
 	if !oneOf(state, VerifyStates) {
 		return nil, fmt.Errorf("%w: verify state %q", ErrInvalid, state)
 	}
-	now := ts(s.Now())
-	q := `UPDATE phials SET verify_state=?, verify_note=?, verified_at=? WHERE id=?`
-	args := []any{state, note, now, id}
-	if state == "ok" {
-		q = `UPDATE phials SET verify_state=?, verify_note=?, verified_at=?, confirmed_at=? WHERE id=?`
-		args = []any{state, note, now, now, id}
-	}
-	res, err := s.db.ExecContext(ctx, q, args...)
+	old, err := s.Get(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if n, _ := res.RowsAffected(); n != 1 {
-		return nil, fmt.Errorf("%s: %w", id, ErrNotFound)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	now := s.Now()
+	q := `UPDATE phials SET verify_state=?, verify_note=?, verified_at=? WHERE id=?`
+	args := []any{state, note, ts(now), id}
+	if state == "ok" {
+		q = `UPDATE phials SET verify_state=?, verify_note=?, verified_at=?, confirmed_at=? WHERE id=?`
+		args = []any{state, note, ts(now), ts(now), id}
+	}
+	if _, err := tx.Exec(q, args...); err != nil {
+		return nil, err
+	}
+	if old.VerifyState != state {
+		if err := logTx(tx, now, Entry{Actor: actor, Action: "verify", PhialID: id, Subject: old.Subject, Note: state + ": " + note}); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
 	}
 	return s.Get(ctx, id)
 }
 
 // Purge removes a phial for good and writes an audit line without its text.
 // It is for a phial that must not exist; no MCP tool calls it.
-func (s *Store) Purge(ctx context.Context, id, reason string) error {
+func (s *Store) Purge(ctx context.Context, id, reason, actor string) error {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		return fmt.Errorf("%w: a reason is required", ErrInvalid)
@@ -707,6 +813,13 @@ func (s *Store) Purge(ctx context.Context, id, reason string) error {
 	}
 	if _, err := tx.Exec(`INSERT INTO purge_log (phial_id, reason, at, text_hash) VALUES (?,?,?,?)`,
 		id, reason, ts(s.Now()), TextHash(subject, text)); err != nil {
+		return err
+	}
+	// The ledger keeps the purged phial's earlier rows; their text goes too.
+	if _, err := tx.Exec(`UPDATE ledger SET text_before='', text_after='', note='purged' WHERE phial_id=?`, id); err != nil {
+		return err
+	}
+	if err := logTx(tx, s.Now(), Entry{Actor: actor, Action: "purge", PhialID: id, Subject: subject, Note: reason}); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -760,14 +873,14 @@ func (s *Store) RecordReceipts(ctx context.Context, surface string, ids []string
 
 const phialCols = `p.id, p.subject, s.kind, p.kind, p.text, p.status, p.origin,
 	COALESCE(p.supersedes, ''), COALESCE(p.superseded_by, ''), p.retract_reason,
-	p.created_at, p.updated_at, p.confirmed_at, p.verified_at, p.verify_state, p.verify_note`
+	p.created_at, p.updated_at, p.confirmed_at, p.verified_at, p.verify_state, p.verify_note, p.created_by`
 
 func scanPhial(r scanner, extra ...any) (*Phial, error) {
 	var p Phial
 	var created, updated, confirmed, verified string
 	dest := []any{&p.ID, &p.Subject, &p.SubjectKind, &p.Kind, &p.Text, &p.Status, &p.Origin,
 		&p.Supersedes, &p.SupersededBy, &p.RetractReason,
-		&created, &updated, &confirmed, &verified, &p.VerifyState, &p.VerifyNote}
+		&created, &updated, &confirmed, &verified, &p.VerifyState, &p.VerifyNote, &p.CreatedBy}
 	if err := r.Scan(append(dest, extra...)...); err != nil {
 		return nil, err
 	}
@@ -1293,4 +1406,308 @@ func (s *Store) Recent(ctx context.Context, limit int) ([]Result, error) {
 		out[i] = Result{Phial: p, Rank: s.Score(p)}
 	}
 	return out, rows.Err()
+}
+
+// ---- sessions ----
+
+// Turn is one message of a session. Only user turns are extracted, but
+// assistant turns travel too so a reviewer can read the context.
+type Turn struct {
+	Index int    `json:"index"`
+	Role  string `json:"role"`
+	Text  string `json:"text"`
+}
+
+// Session is one uploaded agent session.
+type Session struct {
+	ID           string    `json:"id"`
+	Source       string    `json:"source"`
+	Repo         string    `json:"repo,omitempty"`
+	Path         string    `json:"path,omitempty"`
+	CheckpointID string    `json:"checkpoint_id,omitempty"`
+	Commit       string    `json:"commit,omitempty"`
+	UploadedBy   string    `json:"uploaded_by,omitempty"`
+	Turns        []Turn    `json:"turns"`
+	StartedAt    time.Time `json:"started_at,omitzero"`
+	EndedAt      time.Time `json:"ended_at,omitzero"`
+	UploadedAt   time.Time `json:"uploaded_at,omitzero"`
+	ExtractedAt  time.Time `json:"extracted_at,omitzero"`
+	ExtractError string    `json:"extract_error,omitempty"`
+}
+
+// PutSessions stores sessions. A session that is already there is left as
+// it is, so a client can re-upload without resetting extraction. Returns
+// how many were new.
+func (s *Store) PutSessions(ctx context.Context, sessions []Session) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	n := 0
+	now := ts(s.Now())
+	for _, se := range sessions {
+		if se.ID == "" || se.Source == "" || len(se.Turns) == 0 {
+			continue
+		}
+		turns, _ := json.Marshal(se.Turns)
+		res, err := tx.Exec(`INSERT INTO sessions (id, source, repo, path, checkpoint_id, commit_sha, uploaded_by, turns, started_at, ended_at, uploaded_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`,
+			se.ID, se.Source, NormalizeRemote(se.Repo), se.Path, se.CheckpointID, se.Commit, se.UploadedBy, string(turns),
+			tsOrEmpty(se.StartedAt), tsOrEmpty(se.EndedAt), now)
+		if err != nil {
+			return n, err
+		}
+		if k, _ := res.RowsAffected(); k == 1 {
+			n++
+		}
+	}
+	return n, tx.Commit()
+}
+
+func tsOrEmpty(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return ts(t)
+}
+
+// PendingSessions returns sessions not yet extracted, oldest first.
+func (s *Store) PendingSessions(ctx context.Context, limit int) ([]Session, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, source, repo, path, checkpoint_id, commit_sha, uploaded_by, turns, started_at, ended_at, uploaded_at, extracted_at, extract_error
+		FROM sessions WHERE extracted_at = '' ORDER BY uploaded_at LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Session
+	for rows.Next() {
+		var se Session
+		var turns, st, en, up, ex string
+		if err := rows.Scan(&se.ID, &se.Source, &se.Repo, &se.Path, &se.CheckpointID, &se.Commit, &se.UploadedBy, &turns, &st, &en, &up, &ex, &se.ExtractError); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(turns), &se.Turns)
+		se.StartedAt, se.EndedAt, se.UploadedAt, se.ExtractedAt = parseTS(st), parseTS(en), parseTS(up), parseTS(ex)
+		out = append(out, se)
+	}
+	return out, rows.Err()
+}
+
+// MarkExtracted records that a session was processed, with any error.
+func (s *Store) MarkExtracted(ctx context.Context, id, errText string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET extracted_at=?, extract_error=? WHERE id=?`, ts(s.Now()), errText, id)
+	return err
+}
+
+// SessionStats counts sessions.
+func (s *Store) SessionStats(ctx context.Context) (total, pending int, err error) {
+	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*), SUM(extracted_at = '') FROM sessions`).Scan(&total, &pending)
+	return
+}
+
+// ---- proposals ----
+
+// Proposal is a queued change that waits for a person.
+type Proposal struct {
+	ID         string    `json:"id"`
+	Action     string    `json:"action"`
+	TargetID   string    `json:"target_id"`
+	Target     *Phial    `json:"target,omitempty"`
+	Subject    string    `json:"subject"`
+	Kind       string    `json:"kind"`
+	Text       string    `json:"text"`
+	Paths      []string  `json:"paths"`
+	Reason     string    `json:"reason,omitempty"`
+	SessionID  string    `json:"session_id,omitempty"`
+	ProposedBy string    `json:"proposed_by,omitempty"`
+	State      string    `json:"state"`
+	CreatedAt  time.Time `json:"created_at"`
+	ResolvedAt time.Time `json:"resolved_at,omitzero"`
+	ResolvedBy string    `json:"resolved_by,omitempty"`
+	Pool       string    `json:"pool,omitempty"`
+}
+
+// Propose queues a supersede of target with text.
+func (s *Store) Propose(ctx context.Context, p Proposal) (*Proposal, error) {
+	target, err := s.Get(ctx, p.TargetID)
+	if err != nil {
+		return nil, err
+	}
+	if target.Status != StatusActive {
+		return nil, fmt.Errorf("%s: %w", target.ID, ErrNotActive)
+	}
+	text := normText(p.Text)
+	if text == "" || text == target.Text {
+		return nil, fmt.Errorf("%w: proposal text is empty or unchanged", ErrInvalid)
+	}
+	if p.Action == "" {
+		p.Action = "supersede"
+	}
+	if p.Kind == "" {
+		p.Kind = target.Kind
+	}
+	paths, err := checkPaths(p.Paths)
+	if err != nil {
+		return nil, err
+	}
+	if paths == nil {
+		paths = target.Paths
+	}
+	pj, _ := json.Marshal(nonNil(paths))
+	var dup string
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM proposals WHERE target_id=? AND text=? AND state='pending'`, target.ID, text).Scan(&dup); err == nil {
+		return s.GetProposal(ctx, dup)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	now := s.Now()
+	id := "pr_" + newID()[3:]
+	if _, err := tx.Exec(`INSERT INTO proposals (id, action, target_id, subject, kind, text, paths, reason, session_id, proposed_by, created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)`, id, p.Action, target.ID, target.Subject, p.Kind, text, string(pj), p.Reason, p.SessionID, p.ProposedBy, ts(now)); err != nil {
+		return nil, err
+	}
+	if err := logTx(tx, now, Entry{Actor: p.ProposedBy, Action: "propose", PhialID: target.ID, Subject: target.Subject, TextBefore: target.Text, TextAfter: text, Note: p.Reason}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.GetProposal(ctx, id)
+}
+
+const proposalCols = `id, action, target_id, subject, kind, text, paths, reason, session_id, proposed_by, state, created_at, resolved_at, resolved_by`
+
+func scanProposal(r scanner) (*Proposal, error) {
+	var p Proposal
+	var paths, created, resolved string
+	if err := r.Scan(&p.ID, &p.Action, &p.TargetID, &p.Subject, &p.Kind, &p.Text, &paths, &p.Reason, &p.SessionID, &p.ProposedBy, &p.State, &created, &resolved, &p.ResolvedBy); err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal([]byte(paths), &p.Paths)
+	p.CreatedAt, p.ResolvedAt = parseTS(created), parseTS(resolved)
+	return &p, nil
+}
+
+// GetProposal returns one proposal with its target.
+func (s *Store) GetProposal(ctx context.Context, id string) (*Proposal, error) {
+	p, err := scanProposal(s.db.QueryRowContext(ctx, `SELECT `+proposalCols+` FROM proposals WHERE id=?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("proposal %s: %w", id, ErrNotFound)
+	}
+	if err != nil {
+		return nil, err
+	}
+	p.Target, _ = s.Get(ctx, p.TargetID)
+	return p, nil
+}
+
+// Proposals lists proposals in a state ("" means pending), newest first.
+func (s *Store) Proposals(ctx context.Context, state string, limit int) ([]Proposal, error) {
+	if state == "" {
+		state = "pending"
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+proposalCols+` FROM proposals WHERE state=? ORDER BY created_at DESC LIMIT ?`, state, limit)
+	if err != nil {
+		return nil, err
+	}
+	var out []Proposal
+	for rows.Next() {
+		p, err := scanProposal(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out = append(out, *p)
+	}
+	rows.Close()
+	for i := range out {
+		out[i].Target, _ = s.Get(ctx, out[i].TargetID)
+	}
+	return out, rows.Err()
+}
+
+// Resolve applies or rejects a pending proposal. Apply supersedes the target
+// with the proposal's text and returns the new phial.
+func (s *Store) Resolve(ctx context.Context, id string, apply bool, actor string) (*Phial, error) {
+	p, err := s.GetProposal(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if p.State != "pending" {
+		return nil, fmt.Errorf("%w: proposal %s is %s", ErrInvalid, id, p.State)
+	}
+	state := "rejected"
+	var np *Phial
+	if apply {
+		np, err = s.Supersede(ctx, SupersedeInput{ID: p.TargetID, Text: p.Text, Kind: p.Kind, Paths: p.Paths, Origin: "extracted",
+			Actor: actor, Note: "applied proposal " + id, Provenance: Provenance{SessionID: p.SessionID}})
+		if err != nil {
+			return nil, err
+		}
+		state = "applied"
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	now := s.Now()
+	if _, err := tx.Exec(`UPDATE proposals SET state=?, resolved_at=?, resolved_by=? WHERE id=?`, state, ts(now), actor, id); err != nil {
+		return nil, err
+	}
+	if err := logTx(tx, now, Entry{Actor: actor, Action: "review", PhialID: p.TargetID, Subject: p.Subject, Note: state + " " + id}); err != nil {
+		return nil, err
+	}
+	return np, tx.Commit()
+}
+
+// Near finds the active phial in subject whose text is closest to text, with
+// the overlap coefficient of their words (shared words over the smaller
+// set, 0..1). It is how extraction decides between a new phial and a
+// proposal: a candidate that restates or extends a phial scores high.
+func (s *Store) Near(ctx context.Context, subject, text string) (*Phial, float64, error) {
+	rs, err := s.Recall(ctx, Query{Text: text, Subject: subject, Exact: true, Limit: 5})
+	if err != nil || len(rs) == 0 {
+		return nil, 0, err
+	}
+	best, score := rs[0].Phial, 0.0
+	for _, r := range rs {
+		if j := overlap(r.Text, text); j > score {
+			best, score = r.Phial, j
+		}
+	}
+	return best, score, nil
+}
+
+func overlap(a, b string) float64 {
+	wa, wb := wordSet(a), wordSet(b)
+	if len(wa) == 0 || len(wb) == 0 {
+		return 0
+	}
+	n := 0
+	for w := range wa {
+		if wb[w] {
+			n++
+		}
+	}
+	return float64(n) / float64(min(len(wa), len(wb)))
+}
+
+func wordSet(s string) map[string]bool {
+	out := map[string]bool{}
+	for _, w := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !(r == '-' || r == '.' || r == '_' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r > 127)
+	}) {
+		if len(w) > 2 {
+			out[w] = true
+		}
+	}
+	return out
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,17 +132,17 @@ func TestSupersedeRetractConfirm(t *testing.T) {
 		t.Fatalf("history = %v", ids(hist))
 	}
 
-	if _, err := s.Retract(ctx, nw.ID, " "); !errors.Is(err, ErrInvalid) {
+	if _, err := s.Retract(ctx, nw.ID, " ", ""); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("retract without reason: err = %v", err)
 	}
-	r := must(s.Retract(ctx, nw.ID, "changed my mind"))
+	r := must(s.Retract(ctx, nw.ID, "changed my mind", ""))
 	if r.Status != StatusRetracted || r.RetractReason != "changed my mind" {
 		t.Fatalf("retracted = %+v", r)
 	}
-	if _, err := s.Confirm(ctx, nw.ID); !errors.Is(err, ErrNotActive) {
+	if _, err := s.Confirm(ctx, nw.ID, ""); !errors.Is(err, ErrNotActive) {
 		t.Fatalf("confirm retracted: err = %v", err)
 	}
-	if _, err := s.Confirm(ctx, "ph_missing"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Confirm(ctx, "ph_missing", ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("confirm missing: err = %v", err)
 	}
 }
@@ -150,7 +151,7 @@ func TestRecallHidesInactiveUnlessAll(t *testing.T) {
 	s, _ := open(t)
 	ctx := context.Background()
 	p := remember(t, s, RememberInput{Subject: "areas/phial", Text: "uses sqlite fts5"})
-	must(s.Retract(ctx, p.ID, "wrong"))
+	must(s.Retract(ctx, p.ID, "wrong", ""))
 	if got := must(s.Recall(ctx, Query{Text: "sqlite"})); len(got) != 0 {
 		t.Fatalf("default recall returned retracted phial")
 	}
@@ -213,8 +214,8 @@ func TestRecallRanksFreshAndTrustedHigher(t *testing.T) {
 	}
 
 	// Confirming the old phial resets its age.
-	must(s.Confirm(ctx, old.ID))
-	must(s.SetVerify(ctx, fresh.ID, "stale", "symbol gone"))
+	must(s.Confirm(ctx, old.ID, ""))
+	must(s.SetVerify(ctx, fresh.ID, "stale", "symbol gone", ""))
 	got = must(s.Recall(ctx, Query{Text: "port"}))
 	if got[0].ID != old.ID {
 		t.Fatalf("confirmed phial should beat a stale one, got %v", resultIDs(got))
@@ -243,10 +244,10 @@ func TestPurge(t *testing.T) {
 	ctx := context.Background()
 	p := remember(t, s, RememberInput{Subject: "areas/phial", Text: "the token is hunter2", Paths: []string{"secret"}})
 	n := must(s.Supersede(ctx, SupersedeInput{ID: p.ID, Text: "the token lives in agenix"}))
-	if err := s.Purge(ctx, p.ID, ""); !errors.Is(err, ErrInvalid) {
+	if err := s.Purge(ctx, p.ID, "", ""); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("purge without reason: %v", err)
 	}
-	if err := s.Purge(ctx, p.ID, "held a secret"); err != nil {
+	if err := s.Purge(ctx, p.ID, "held a secret", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Get(ctx, p.ID); !errors.Is(err, ErrNotFound) {
@@ -266,7 +267,7 @@ func TestPurge(t *testing.T) {
 	if reason != "held a secret" || count != 1 {
 		t.Fatalf("purge log = %q, %d rows", reason, count)
 	}
-	if err := s.Purge(ctx, p.ID, "again"); !errors.Is(err, ErrNotFound) {
+	if err := s.Purge(ctx, p.ID, "again", ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second purge: %v", err)
 	}
 }
@@ -351,7 +352,7 @@ func TestPurgeLeavesNoTextOnDisk(t *testing.T) {
 	for i := 0; i < 50; i++ { // more rows, so the FTS index has segments
 		remember(t, s, RememberInput{Subject: "areas/x", Text: fmt.Sprintf("filler phial number %d", i)})
 	}
-	if err := s.Purge(ctx, p.ID, "held a secret"); err != nil {
+	if err := s.Purge(ctx, p.ID, "held a secret", ""); err != nil {
 		t.Fatal(err)
 	}
 	if ok := must(s.WasPurged(ctx, "areas/x", "the key is "+secret)); !ok {
@@ -396,5 +397,87 @@ func TestRecallExactSubject(t *testing.T) {
 	got := must(s.Recall(ctx, Query{Subject: "areas/homelab", Exact: true, All: true}))
 	if len(got) != 1 || got[0].ID != parent.ID {
 		t.Fatalf("exact recall = %v", resultIDs(got))
+	}
+}
+
+func TestLedgerRecordsEveryChange(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	p, _, err := s.Remember(ctx, RememberInput{Subject: "areas/crane", Text: "uses rust", Actor: "jsp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.CreatedBy != "jsp" {
+		t.Fatalf("created_by = %q", p.CreatedBy)
+	}
+	must(s.Confirm(ctx, p.ID, "owen"))
+	n := must(s.Supersede(ctx, SupersedeInput{ID: p.ID, Text: "uses rust and c++", Actor: "owen", Note: "added c++"}))
+	must(s.Retract(ctx, n.ID, "rewrite", "jsp"))
+	es := must(s.Ledger(ctx, "", "areas/crane", "", 0))
+	var actions []string
+	for _, e := range es {
+		actions = append(actions, e.Actor+":"+e.Action)
+	}
+	want := "jsp:retract owen:supersede owen:confirm jsp:remember"
+	if got := strings.Join(actions, " "); got != want {
+		t.Fatalf("ledger = %q, want %q", got, want)
+	}
+	if es[1].TextBefore != "uses rust" || es[1].TextAfter != "uses rust and c++" || es[1].Note != "added c++" {
+		t.Fatalf("supersede entry = %+v", es[1])
+	}
+	if by := must(s.Ledger(ctx, "", "", "owen", 0)); len(by) != 2 {
+		t.Fatalf("owen's entries = %d", len(by))
+	}
+}
+
+func TestSessionsAndProposals(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	n := must(s.PutSessions(ctx, []Session{
+		{ID: "claude-code:abc", Source: "claude-code", Repo: "git@github.com:a/b.git", Turns: []Turn{{Index: 0, Role: "user", Text: "hi"}}},
+		{ID: "claude-code:abc", Source: "claude-code", Turns: []Turn{{Role: "user", Text: "dup"}}},
+		{ID: "", Source: "x", Turns: []Turn{{Role: "user", Text: "no id"}}},
+	}))
+	if n != 1 {
+		t.Fatalf("stored %d sessions, want 1", n)
+	}
+	pend := must(s.PendingSessions(ctx, 10))
+	if len(pend) != 1 || pend[0].Repo != "github.com/a/b" || pend[0].Turns[0].Text != "hi" {
+		t.Fatalf("pending = %+v", pend)
+	}
+	if err := s.MarkExtracted(ctx, "claude-code:abc", ""); err != nil {
+		t.Fatal(err)
+	}
+	if left := must(s.PendingSessions(ctx, 10)); len(left) != 0 {
+		t.Fatal("marked session still pending")
+	}
+
+	target := remember(t, s, RememberInput{Subject: "areas/b", Text: "deploys to alastor on port 7480", Paths: []string{"deploy"}})
+	near, score := func() (*Phial, float64) {
+		p, sc, err := s.Near(ctx, "areas/b", "deploys to alastor on port 7481 behind traefik")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p, sc
+	}()
+	if near == nil || near.ID != target.ID || score < 0.5 {
+		t.Fatalf("near = %v score %v", near, score)
+	}
+	pr := must(s.Propose(ctx, Proposal{TargetID: target.ID, Text: "deploys to alastor on port 7481 behind traefik", Reason: "newer session", SessionID: "claude-code:abc", ProposedBy: "extract"}))
+	if again := must(s.Propose(ctx, Proposal{TargetID: target.ID, Text: "deploys to alastor on port 7481 behind traefik"})); again.ID != pr.ID {
+		t.Fatal("duplicate proposal made")
+	}
+	if ps := must(s.Proposals(ctx, "", 0)); len(ps) != 1 || ps[0].Target == nil {
+		t.Fatalf("proposals = %+v", ps)
+	}
+	np := must(s.Resolve(ctx, pr.ID, true, "jsp"))
+	if np == nil || np.Supersedes != target.ID || np.Origin != "extracted" || len(np.Paths) != 1 {
+		t.Fatalf("applied phial = %+v", np)
+	}
+	if _, err := s.Resolve(ctx, pr.ID, false, "jsp"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("resolve twice: %v", err)
+	}
+	if ps := must(s.Proposals(ctx, "applied", 0)); len(ps) != 1 || ps[0].ResolvedBy != "jsp" {
+		t.Fatalf("applied list = %+v", ps)
 	}
 }

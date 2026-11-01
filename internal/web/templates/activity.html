@@ -1,0 +1,15 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="title-row">
+  <div>
+    <h1>Activity</h1>
+    <p class="lede">Every change, newest first, with who made it{{if $d.Subject}} in {{$d.Subject}}{{end}}{{if $d.Actor}} by {{$d.Actor}}{{end}}.</p>
+  </div>
+</div>
+<form class="filters three" method="get" action="/activity">
+  <label class="sr" for="fs">Subject</label><input id="fs" name="subject" value="{{$d.Subject}}" placeholder="Subject">
+  <label class="sr" for="fa">Actor</label><input id="fa" name="actor" value="{{$d.Actor}}" placeholder="Actor">
+  <button type="submit" class="button">Filter</button>
+</form>
+{{template "entries" $d.Entries}}
+{{end}}

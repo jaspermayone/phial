@@ -129,7 +129,7 @@ func TestImportIsIdempotentAndKeepsDates(t *testing.T) {
 	if err != nil || len(agenix) != 1 {
 		t.Fatalf("recall agenix: %v %v", agenix, err)
 	}
-	if err := st.Purge(ctx, agenix[0].ID, "test"); err != nil {
+	if err := st.Purge(ctx, agenix[0].ID, "test", ""); err != nil {
 		t.Fatal(err)
 	}
 	if fourth, _ := Import(ctx, st, subs, false); fourth.Created != 0 {

@@ -4,6 +4,7 @@
   <h1>Sign in to phial</h1>
   <p class="lede">Use the server token. It is the value of <code>PHIAL_TOKEN</code> on the server.</p>
   {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+  {{if .OAuthUI}}<a class="button primary wide" href="/login/oauth?next={{q .Data}}">Sign in with your account</a>{{end}}
   <form method="post" action="/login" class="form">
     <input type="hidden" name="next" value="{{.Data}}">
     <input type="text" name="username" value="phial" autocomplete="username" hidden>

@@ -1,0 +1,35 @@
+{{define "content"}}
+{{$d := .Data}}{{$csrf := .CSRF}}
+<div class="title-row">
+  <div>
+    <h1>Proposals</h1>
+    <p class="lede">Changes that extraction found in sessions and that wait for a person. Apply one to supersede the target, or reject it.</p>
+  </div>
+</div>
+<nav class="tabs" aria-label="State">
+  <a href="/proposals"{{if eq $d.State "pending"}} aria-current="page"{{end}}>Pending</a>
+  <a href="/proposals?state=applied"{{if eq $d.State "applied"}} aria-current="page"{{end}}>Applied</a>
+  <a href="/proposals?state=rejected"{{if eq $d.State "rejected"}} aria-current="page"{{end}}>Rejected</a>
+</nav>
+<ol class="ledger">
+  {{range $d.Proposals}}
+  <li>
+    <div class="ledger-head">
+      <span class="actor">{{.ProposedBy}}</span> <span class="action">{{.Action}}</span>
+      <a href="/s/{{.Subject}}">{{.Subject}}</a>
+      {{if .Pool}}<span class="pool">shared: {{.Pool}}</span>{{end}}
+      {{if .Target}}<a class="mono" href="/p/{{.Target.ID}}">{{.Target.ID}}</a>{{end}}
+      <span class="muted" title="{{when .CreatedAt}}">{{age .CreatedAt}}</span>
+    </div>
+    {{if .Target}}<p class="change">{{template "wdiff" (diff .Target.Text .Text)}}</p>{{else}}<p class="change"><ins>{{.Text}}</ins></p>{{end}}
+    {{if .Reason}}<p class="muted note">{{.Reason}}</p>{{end}}
+    {{if eq .State "pending"}}
+    <div class="row-actions">
+      <form method="post" action="/proposals/{{.ID}}/apply"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit" class="button primary">Apply</button></form>
+      <form method="post" action="/proposals/{{.ID}}/reject"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit" class="button">Reject</button></form>
+    </div>
+    {{else}}<p class="muted note">{{.State}} by {{.ResolvedBy}} {{age .ResolvedAt}}</p>{{end}}
+  </li>
+  {{else}}<li class="empty">No {{$d.State}} proposals.</li>{{end}}
+</ol>
+{{end}}

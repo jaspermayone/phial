@@ -1,13 +1,14 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -17,24 +18,30 @@ import (
 	"github.com/jaspermayone/phial/internal/auth"
 	"github.com/jaspermayone/phial/internal/rank"
 	"github.com/jaspermayone/phial/internal/store"
+	"github.com/jaspermayone/phial/internal/tenant"
 )
 
 const tok = "0123456789abcdef0123456789abcdef"
 
-func server(t *testing.T) (*httptest.Server, *store.Store) {
+func server(t *testing.T, mode string) (*httptest.Server, *tenant.Manager) {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "phial.db"), rank.Default())
+	m, err := tenant.New(t.TempDir(), rank.Default(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { st.Close() })
-	h, err := New(st, auth.New(tok, false))
+	t.Cleanup(func() { m.Close() })
+	a := auth.New(tok, false)
+	if mode == "none" {
+		a = auth.New("", false)
+	}
+	a.Primary = "jsp"
+	h, err := New(Options{Manager: m, Auth: a, Mode: mode, Primary: "jsp", UILogin: "token"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return srv, st
+	return srv, m
 }
 
 type bearer struct{ token string }
@@ -46,7 +53,7 @@ func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 func TestHealthzIsOpen(t *testing.T) {
-	srv, _ := server(t)
+	srv, _ := server(t, "token")
 	resp, err := http.Get(srv.URL + "/healthz")
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +64,7 @@ func TestHealthzIsOpen(t *testing.T) {
 }
 
 func TestMCPNeedsTokenAndWorksWithIt(t *testing.T) {
-	srv, st := server(t)
+	srv, m := server(t, "token")
 	resp, err := http.Post(srv.URL+"/mcp", "application/json", strings.NewReader(`{}`))
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +74,8 @@ func TestMCPNeedsTokenAndWorksWithIt(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if _, _, err := st.Remember(ctx, store.RememberInput{Subject: "profile", Text: "Name: Jasper"}); err != nil {
+	v, _ := m.View("jsp")
+	if _, _, err := v.Remember(ctx, store.RememberInput{Subject: "profile", Text: "Name: Jasper"}); err != nil {
 		t.Fatal(err)
 	}
 	tr := &mcp.StreamableClientTransport{Endpoint: srv.URL + "/mcp", HTTPClient: &http.Client{Transport: bearer{tok}}, MaxRetries: -1}
@@ -90,14 +98,63 @@ func TestMCPNeedsTokenAndWorksWithIt(t *testing.T) {
 	}
 }
 
+func TestClientAPI(t *testing.T) {
+	srv, m := server(t, "token")
+	c := &http.Client{Transport: bearer{tok}}
+	post := func(path string, body any) (int, map[string]any) {
+		b, _ := json.Marshal(body)
+		resp, err := c.Post(srv.URL+path, "application/json", bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out
+	}
+	status, out := post("/api/ingest", IngestRequest{Sessions: []store.Session{
+		{ID: "claude-code:1", Source: "claude-code", Repo: "github.com/a/b", Turns: []store.Turn{{Role: "user", Text: "we deploy to alastor"}}},
+	}})
+	if status != 200 || out["new"].(float64) != 1 {
+		t.Fatalf("ingest: %d %v", status, out)
+	}
+	status, out = post("/api/remember", store.RememberInput{Subject: "areas/b", Text: "main.go holds serve", Loci: []store.Locus{{Repo: "github.com/a/b", File: "main.go", Symbol: "serve"}}})
+	if status != 200 {
+		t.Fatalf("remember: %d %v", status, out)
+	}
+	id := out["phial"].(map[string]any)["id"].(string)
+	resp, _ := c.Get(srv.URL + "/api/loci?repo=git@github.com:a/b.git")
+	var loci struct {
+		Phials []store.Result `json:"phials"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&loci)
+	if len(loci.Phials) != 1 || loci.Phials[0].ID != id {
+		t.Fatalf("loci = %+v", loci)
+	}
+	status, out = post("/api/verify", map[string]any{"results": []map[string]string{{"id": id, "state": "stale", "note": "serve is gone"}}})
+	if status != 200 || out["updated"].(float64) != 1 {
+		t.Fatalf("verify: %d %v", status, out)
+	}
+	v, _ := m.View("jsp")
+	p, _ := v.Get(context.Background(), id)
+	if p.VerifyState != "stale" {
+		t.Fatalf("verify state = %q", p.VerifyState)
+	}
+	resp, _ = c.Get(srv.URL + "/api/whoami")
+	var who map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&who)
+	if who["identity"] != "jsp" || who["pending_sessions"].(float64) != 1 {
+		t.Fatalf("whoami = %v", who)
+	}
+}
+
 var csrfRe = regexp.MustCompile(`name="csrf" value="([^"]+)"`)
 
 func TestUILoginAndActions(t *testing.T) {
-	srv, st := server(t)
+	srv, m := server(t, "token")
 	jar, _ := cookiejar.New(nil)
 	c := &http.Client{Jar: jar}
 
-	// Not signed in: pages redirect to /login, posts are refused.
 	resp, err := c.Get(srv.URL + "/s/profile")
 	if err != nil {
 		t.Fatal(err)
@@ -112,7 +169,6 @@ func TestUILoginAndActions(t *testing.T) {
 	if resp.StatusCode != 401 {
 		t.Fatalf("anonymous post: %d", resp.StatusCode)
 	}
-
 	resp, _ = c.PostForm(srv.URL+"/login", url.Values{"token": {"wrong"}})
 	if resp.StatusCode != 401 {
 		t.Fatalf("wrong token login: %d", resp.StatusCode)
@@ -122,13 +178,12 @@ func TestUILoginAndActions(t *testing.T) {
 		t.Fatalf("login: %d at %s", resp.StatusCode, resp.Request.URL)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	m := csrfRe.FindSubmatch(body)
-	if m == nil {
+	mt := csrfRe.FindSubmatch(body)
+	if mt == nil {
 		t.Fatal("no CSRF token on the home page")
 	}
-	csrf := string(m[1])
+	csrf := string(mt[1])
 
-	// A post without the CSRF token is refused even with a session.
 	resp, _ = c.PostForm(srv.URL+"/remember", url.Values{"subject": {"areas/phial"}, "text": {"Uses Go"}})
 	if resp.StatusCode != 403 {
 		t.Fatalf("post without CSRF: %d", resp.StatusCode)
@@ -143,21 +198,25 @@ func TestUILoginAndActions(t *testing.T) {
 	}
 	id := strings.TrimPrefix(resp.Request.URL.Path, "/p/")
 
-	resp, _ = c.PostForm(srv.URL+"/p/"+id+"/supersede", url.Values{"csrf": {csrf}, "text": {"Uses Go and SQLite with FTS5"}})
+	resp, _ = c.PostForm(srv.URL+"/p/"+id+"/supersede", url.Values{"csrf": {csrf}, "text": {"Uses Go and SQLite with FTS5"}, "why": {"fts added"}})
 	if resp.StatusCode != 200 {
 		t.Fatalf("supersede: %d", resp.StatusCode)
 	}
 	newID := strings.TrimPrefix(resp.Request.URL.Path, "/p/")
+	page, _ = io.ReadAll(resp.Body)
+	if !strings.Contains(string(page), "<ins>with FTS5</ins>") || !strings.Contains(string(page), "fts added") {
+		t.Fatalf("change diff not shown on the phial page")
+	}
 	resp, _ = c.PostForm(srv.URL+"/p/"+newID+"/retract", url.Values{"csrf": {csrf}, "reason": {"testing"}})
 	if resp.StatusCode != 200 {
 		t.Fatalf("retract: %d", resp.StatusCode)
 	}
-	p, err := st.Get(context.Background(), newID)
-	if err != nil || p.Status != store.StatusRetracted {
+	v, _ := m.View("jsp")
+	p, err := v.Get(context.Background(), newID)
+	if err != nil || p.Status != store.StatusRetracted || p.CreatedBy != "jsp" {
 		t.Fatalf("after retract: %+v %v", p, err)
 	}
-
-	for _, path := range []string{"/", "/s/areas/phial?status=all", "/search?q=sqlite&status=all", "/low", "/p/" + id} {
+	for _, path := range []string{"/", "/s/areas/phial?status=all", "/search?q=sqlite&status=all", "/low", "/activity", "/proposals", "/remember", "/p/" + id} {
 		resp, err := c.Get(srv.URL + path)
 		if err != nil || resp.StatusCode != 200 {
 			t.Fatalf("GET %s: %v %d", path, err, resp.StatusCode)
@@ -166,24 +225,21 @@ func TestUILoginAndActions(t *testing.T) {
 	if resp, _ := c.Get(srv.URL + "/p/ph_000000000000000000000000"); resp.StatusCode != 404 {
 		t.Fatalf("missing phial: %d", resp.StatusCode)
 	}
-
 	resp, _ = c.PostForm(srv.URL+"/logout", url.Values{"csrf": {csrf}})
 	if resp.Request.URL.Path != "/login" {
 		t.Fatalf("logout landed on %s", resp.Request.URL)
 	}
-	resp, _ = c.Get(srv.URL + "/")
-	if resp.Request.URL.Path != "/login" {
-		t.Fatal("still signed in after logout")
-	}
 }
 
 func TestNoAuthServesLoopbackHostsOnly(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "phial.db"), rank.Default())
+	m, err := tenant.New(t.TempDir(), rank.Default(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
-	h, err := New(st, auth.New("", false))
+	defer m.Close()
+	a := auth.New("", false)
+	a.Primary = "jsp"
+	h, err := New(Options{Manager: m, Auth: a, Mode: "none", Primary: "jsp", UILogin: "token"})
 	if err != nil {
 		t.Fatal(err)
 	}

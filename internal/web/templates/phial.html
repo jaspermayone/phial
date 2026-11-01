@@ -7,11 +7,12 @@
     <p class="lede">
       <span class="kind">{{$p.Kind}}</span>{{range $p.Paths}} · {{.}}{{end}}
       {{if $d.Global}} · applies to every project{{end}}
+      {{if $p.Pool}} · <span class="pool">shared: {{$p.Pool}}</span>{{end}}{{if $p.CreatedBy}} · by {{$p.CreatedBy}}{{end}}
       {{if eq $p.Status "retracted"}} · <span class="neg">retracted: {{$p.RetractReason}}</span>{{end}}
       {{if $p.SupersededBy}} · superseded by <a href="/p/{{$p.SupersededBy}}">the newer phial</a>{{end}}
     </p>
   </div>
-  {{if eq $p.Status "active"}}
+  {{if and (eq $p.Status "active") (not $d.ReadOnly)}}
   <form method="post" action="/p/{{$p.ID}}/confirm"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit" class="button primary">Still true</button></form>
   {{end}}
 </div>
@@ -29,7 +30,8 @@
       </dl>
     </section>
 
-    {{if eq $p.Status "active"}}
+    {{if $d.ReadOnly}}<p class="muted">You can read this shared pool but not write it.</p>{{end}}
+    {{if and (eq $p.Status "active") (not $d.ReadOnly)}}
     <details class="panel act">
       <summary>Rewrite it</summary>
       <p class="help">The old text stays as history. Use this when the fact changed.</p>
@@ -40,6 +42,7 @@
           <div class="field"><label for="kind">Kind</label>{{template "kindselect" $p.Kind}}</div>
           <div class="field"><label for="paths">Paths</label><input id="paths" name="paths" value="{{join $p.Paths ", "}}"></div>
         </div>
+        <div class="field"><label for="why">Why did it change?</label><input id="why" name="why" placeholder="One line for the ledger"></div>
         <div class="form-foot"><button type="submit" class="button">Supersede</button></div>
       </form>
     </details>
@@ -79,6 +82,10 @@
         </li>{{end}}
       </ul>
       {{else}}<p class="empty">No source was recorded.</p>{{end}}
+    </section>
+    <section class="panel">
+      <header class="panel-head"><h2>Changes</h2><a href="/activity?subject={{q $p.Subject}}">Subject activity</a></header>
+      {{template "entries" $d.Changes}}
     </section>
     {{if gt (len $d.History) 1}}
     <section class="panel">

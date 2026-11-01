@@ -40,8 +40,8 @@ floor = 0.25
 	if c.Addr != "127.0.0.1:9000" || c.Auth.Token != tok || !c.SecureCookies() {
 		t.Fatalf("config = %+v", c)
 	}
-	if c.DB != filepath.Join(dir, "phial", "phial.db") {
-		t.Fatalf("db = %q", c.DB)
+	if c.DataDir != filepath.Join(dir, "phial") {
+		t.Fatalf("data_dir = %q", c.DataDir)
 	}
 	if g := c.Ranking.Kinds["gotcha"]; time.Duration(g.HalfLife) != 90*rank.Day || g.Floor != 0.25 {
 		t.Fatalf("gotcha decay = %+v", g)
@@ -87,5 +87,35 @@ func TestPartialDecayKeepsTheOtherDefault(t *testing.T) {
 	}
 	if d := c.Ranking.Kinds["decision"]; d.Floor != 0.1 || d.HalfLife != rank.Default().Kinds["decision"].HalfLife {
 		t.Fatalf("decision = %+v, want floor 0.1 with the default half-life", d)
+	}
+}
+
+func TestOAuthModeNeedsIssuerAndClient(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "x.toml")
+	env1 := env(map[string]string{"PHIAL_AUTH": "oauth", "PHIAL_PUBLIC_URL": "https://p.example", "PHIAL_TOKEN": tok})
+	if _, err := load(path, env1); err == nil || !strings.Contains(err.Error(), "issuer") {
+		t.Fatalf("missing issuer: %v", err)
+	}
+	os.WriteFile(path, []byte(`
+public_url = "https://p.example"
+[auth]
+mode = "oauth"
+issuer = "https://a.example/application/o/phial/"
+client_id = "phial"
+accepted_audiences = ["phial"]
+allowed_users = ["jsp"]
+ui_login = "oauth"
+[[pools]]
+name = "crane"
+members = ["jsp", "owen"]
+subjects = ["areas/crane"]
+`), 0o600)
+	c, err := load(path, env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Auth.UILogin != "oauth" || len(c.Pools) != 1 || c.Pools[0].Members[1] != "owen" || c.Auth.AllowedUsers[0] != "jsp" {
+		t.Fatalf("config = %+v", c)
 	}
 }

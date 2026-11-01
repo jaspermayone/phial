@@ -78,6 +78,12 @@ func Line(p *store.Phial, parts *store.Result, now time.Time, o Options) string 
 	} else {
 		tags = append(tags, p.Subject)
 	}
+	if p.Pool != "" {
+		tags = append(tags, "(shared: "+p.Pool+")")
+	}
+	if p.CreatedBy != "" {
+		tags = append(tags, "by "+p.CreatedBy)
+	}
 	switch p.VerifyState {
 	case "moved", "stale", "orphaned":
 		note := p.VerifyNote
@@ -262,4 +268,128 @@ func OutlineText(title string, nodes []*Node, now time.Time) string {
 		}
 	}
 	return b.String()
+}
+
+// Changes writes ledger entries as text, newest first, with a word diff
+// where the text changed.
+func Changes(es []store.Entry, now time.Time) string {
+	if len(es) == 0 {
+		return "No changes recorded."
+	}
+	var b strings.Builder
+	for _, e := range es {
+		fmt.Fprintf(&b, "- %s · %s · %s", Age(now, e.At), e.Actor, e.Action)
+		if e.PhialID != "" {
+			fmt.Fprintf(&b, " · [%s]", e.PhialID)
+		}
+		if e.Subject != "" {
+			fmt.Fprintf(&b, " · %s", e.Subject)
+		}
+		if e.Pool != "" {
+			fmt.Fprintf(&b, " · (shared: %s)", e.Pool)
+		}
+		if e.Note != "" {
+			fmt.Fprintf(&b, " · %s", e.Note)
+		}
+		b.WriteByte('\n')
+		switch {
+		case e.TextBefore != "" && e.TextAfter != "":
+			fmt.Fprintf(&b, "    %s\n", Diff(e.TextBefore, e.TextAfter))
+		case e.TextAfter != "":
+			fmt.Fprintf(&b, "    + %s\n", e.TextAfter)
+		case e.TextBefore != "":
+			fmt.Fprintf(&b, "    was: %s\n", e.TextBefore)
+		}
+	}
+	return b.String()
+}
+
+// Diff writes a word-level diff: removed words in [-...-], added in {+...+}.
+func Diff(before, after string) string {
+	a, b := strings.Fields(before), strings.Fields(after)
+	ops := diffWords(a, b)
+	var out []string
+	for _, op := range ops {
+		switch op.kind {
+		case ' ':
+			out = append(out, op.text)
+		case '-':
+			out = append(out, "[-"+op.text+"-]")
+		case '+':
+			out = append(out, "{+"+op.text+"+}")
+		}
+	}
+	return strings.Join(out, " ")
+}
+
+// DiffOp is one run of a word diff.
+type DiffOp struct {
+	Kind byte // ' ', '-' or '+'
+	Text string
+}
+
+type diffOp struct {
+	kind byte
+	text string
+}
+
+// DiffOps returns the word diff as runs, for HTML rendering.
+func DiffOps(before, after string) []DiffOp {
+	var out []DiffOp
+	for _, op := range diffWords(strings.Fields(before), strings.Fields(after)) {
+		out = append(out, DiffOp{Kind: op.kind, Text: op.text})
+	}
+	return out
+}
+
+// diffWords is a longest-common-subsequence diff over words, merged into
+// runs of equal kind.
+func diffWords(a, b []string) []diffOp {
+	n, m := len(a), len(b)
+	if n*m > 4_000_000 { // very long texts: no diff, just the two sides
+		return []diffOp{{'-', strings.Join(a, " ")}, {'+', strings.Join(b, " ")}}
+	}
+	lcs := make([][]int, n+1)
+	for i := range lcs {
+		lcs[i] = make([]int, m+1)
+	}
+	for i := n - 1; i >= 0; i-- {
+		for j := m - 1; j >= 0; j-- {
+			if a[i] == b[j] {
+				lcs[i][j] = lcs[i+1][j+1] + 1
+			} else {
+				lcs[i][j] = max(lcs[i+1][j], lcs[i][j+1])
+			}
+		}
+	}
+	var ops []diffOp
+	push := func(kind byte, w string) {
+		if len(ops) > 0 && ops[len(ops)-1].kind == kind {
+			ops[len(ops)-1].text += " " + w
+			return
+		}
+		ops = append(ops, diffOp{kind, w})
+	}
+	i, j := 0, 0
+	for i < n && j < m {
+		switch {
+		case a[i] == b[j]:
+			push(' ', a[i])
+			i++
+			j++
+		case lcs[i+1][j] >= lcs[i][j+1]:
+			push('-', a[i])
+			i++
+		default:
+			push('+', b[j])
+			j++
+		}
+	}
+	for ; i < n; i++ {
+		push('-', a[i])
+	}
+	for ; j < m; j++ {
+		push('+', b[j])
+	}
+	return ops
 }

@@ -260,3 +260,22 @@ body.bare { display: grid; place-items: center; min-height: 100vh; }
   dl.kv > div { grid-template-columns: 1fr; gap: 2px; }
   input, select, .button { height: 44px; }
 }
+
+/* ---- pools, ledger and diffs ---- */
+.pool { font-size: 11px; font-weight: 500; line-height: 18px; padding: 0 7px; border-radius: 999px; background: #e4ecea; color: #1d4a45; white-space: nowrap; vertical-align: middle; }
+h1 .pool { font-family: var(--font); font-size: 12px; }
+.small { font-size: 14px; }
+.ledger { list-style: none; margin: 0; padding: 0; }
+.ledger li { padding: 10px 0; border-top: 1px solid var(--rule); }
+.ledger li:first-child { border-top: 0; }
+.ledger-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; }
+.ledger-head .actor { font-weight: 600; }
+.ledger-head .action { color: var(--muted); }
+.ledger-head .mono { font-family: var(--mono); font-size: 12px; }
+.change { margin: 4px 0 0; }
+.change del { background: #fde6e3; color: #831c1e; text-decoration: line-through; padding: 0 2px; border-radius: 3px; }
+.change ins { background: #dcfae5; color: #04250e; text-decoration: none; padding: 0 2px; border-radius: 3px; }
+.note { font-size: 13px; margin-top: 2px; }
+.row-actions { display: flex; gap: 8px; margin-top: 8px; }
+.row-actions form { margin: 0; }
+.filters.three { grid-template-columns: 1fr 1fr auto; }

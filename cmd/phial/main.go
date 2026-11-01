@@ -18,10 +18,13 @@ import (
 
 	"github.com/jaspermayone/phial/internal/auth"
 	"github.com/jaspermayone/phial/internal/config"
+	"github.com/jaspermayone/phial/internal/extract"
 	"github.com/jaspermayone/phial/internal/httpapi"
 	"github.com/jaspermayone/phial/internal/importer"
+	"github.com/jaspermayone/phial/internal/llm"
 	"github.com/jaspermayone/phial/internal/mcpserver"
 	"github.com/jaspermayone/phial/internal/store"
+	"github.com/jaspermayone/phial/internal/tenant"
 )
 
 const usage = `phial: a memory server for coding agents
@@ -31,9 +34,12 @@ Usage:
   phial import lard --dir DIR          import a lard memory dir or backup tenant
   phial import lard --url URL          import from a running lard server
                     [--token-file F]   bearer token for --url (or LARD_TOKEN)
+                    [--user ID]        the identity to import into (default: primary_user)
                     [--apply]          write; without it the import is a dry run
-  phial rank-report [--limit N]        active phials with the lowest scores
-  phial purge ID --reason TEXT         remove one phial for good (writes an audit line)
+  phial extract [--user ID]            run one extraction pass now
+  phial users                          list identities that have a store
+  phial rank-report [--user ID] [--limit N]
+  phial purge ID --reason TEXT [--user ID]
   phial version
 
 Config: $PHIAL_CONFIG or ~/.config/phial/config.toml; env vars win.
@@ -53,6 +59,10 @@ func main() {
 		err = serve(ctx)
 	case "import":
 		err = importCmd(ctx, os.Args[2:])
+	case "extract":
+		err = extractCmd(ctx, os.Args[2:])
+	case "users":
+		err = users()
 	case "rank-report":
 		err = rankReport(ctx, os.Args[2:])
 	case "purge":
@@ -71,24 +81,36 @@ func main() {
 	}
 }
 
-func openStore() (*config.Config, *store.Store, error) {
+func manager() (*config.Config, *tenant.Manager, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, nil, err
 	}
-	st, err := store.Open(cfg.DB, cfg.Ranking)
+	m, err := tenant.New(cfg.DataDir, cfg.Ranking, cfg.Pools, cfg.Auth.AllowedUsers)
 	if err != nil {
-		return nil, nil, fmt.Errorf("open %s: %w", cfg.DB, err)
+		return nil, nil, err
 	}
-	return cfg, st, nil
+	return cfg, m, nil
+}
+
+func userFlag(fs *flag.FlagSet) *string {
+	return fs.String("user", "", "identity to act as (default: primary_user)")
+}
+
+func viewFor(cfg *config.Config, m *tenant.Manager, user string) (*tenant.View, error) {
+	if user == "" {
+		user = cfg.PrimaryUser
+	}
+	return m.View(user)
 }
 
 func serve(ctx context.Context) error {
-	cfg, st, err := openStore()
+	cfg, m, err := manager()
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	defer m.Close()
+
 	token := cfg.Auth.Token
 	if cfg.Auth.Mode == "none" {
 		token = ""
@@ -96,18 +118,29 @@ func serve(ctx context.Context) error {
 	}
 	a := auth.New(token, cfg.SecureCookies())
 	a.Origin = auth.OriginOf(cfg.PublicURL)
-	h, err := httpapi.New(st, a)
+	a.Primary = cfg.PrimaryUser
+	var oa *auth.OAuth
+	if cfg.Auth.Mode == "oauth" {
+		oa = &auth.OAuth{
+			Issuer: cfg.Auth.Issuer, PublicURL: cfg.PublicURL, IntrospectionURL: cfg.Auth.IntrospectionURL,
+			ClientID: cfg.Auth.ClientID, ClientSecret: cfg.Auth.ClientSecret,
+			AcceptedAudiences: cfg.Auth.AcceptedAudiences, RequiredScopes: cfg.Auth.RequiredScopes,
+			Allowed: m.Allowed,
+		}
+	}
+	h, err := httpapi.New(httpapi.Options{Manager: m, Auth: a, OAuth: oa, Mode: cfg.Auth.Mode, Primary: cfg.PrimaryUser, UILogin: cfg.Auth.UILogin})
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{
-		Addr:              cfg.Addr,
-		Handler:           h,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	client := &llm.Client{BaseURL: cfg.LLM.BaseURL, Model: cfg.LLM.Model, APIKey: cfg.LLM.APIKey}
+	worker := &extract.Worker{Manager: m, Client: client, Interval: time.Duration(cfg.Extract.Interval), Quiet: time.Duration(cfg.Extract.Quiet)}
+	go worker.Run(ctx)
+
+	srv := &http.Server{Addr: cfg.Addr, Handler: h, ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
-	slog.Info("phial listening", "addr", cfg.Addr, "db", cfg.DB, "auth", cfg.Auth.Mode, "token", a.Fingerprint(), "version", mcpserver.Version)
+	slog.Info("phial listening", "addr", cfg.Addr, "data", cfg.DataDir, "auth", cfg.Auth.Mode, "ui_login", cfg.Auth.UILogin,
+		"pools", len(cfg.Pools), "extract", client.Enabled(), "version", mcpserver.Version)
 	select {
 	case err := <-errc:
 		return err
@@ -120,12 +153,13 @@ func serve(ctx context.Context) error {
 
 func importCmd(ctx context.Context, args []string) error {
 	if len(args) == 0 || args[0] != "lard" {
-		return errors.New("usage: phial import lard (--dir DIR | --url URL) [--apply]")
+		return errors.New("usage: phial import lard (--dir DIR | --url URL) [--user ID] [--apply]")
 	}
 	fs := flag.NewFlagSet("import lard", flag.ContinueOnError)
 	dir := fs.String("dir", "", "lard memory directory, or a backup tenant that holds memory/")
 	url := fs.String("url", "", "base URL of a running lard server")
 	tokenFile := fs.String("token-file", "", "file with a bearer token for --url (default: $LARD_TOKEN)")
+	user := userFlag(fs)
 	apply := fs.Bool("apply", false, "write the phials; without it this is a dry run")
 	asJSON := fs.Bool("json", false, "print the report as JSON")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -154,20 +188,18 @@ func importCmd(ctx context.Context, args []string) error {
 		return err
 	}
 
-	cfg, err := config.Load()
+	cfg, m, err := manager()
 	if err != nil {
 		return err
 	}
-	// A dry run writes nothing, so it does not create a database that is
-	// not there yet; it then cannot count what already exists.
-	var st *store.Store
-	if _, statErr := os.Stat(cfg.DB); *apply || statErr == nil {
-		if st, err = store.Open(cfg.DB, cfg.Ranking); err != nil {
-			return fmt.Errorf("open %s: %w", cfg.DB, err)
-		}
-		defer st.Close()
+	defer m.Close()
+	// A dry run on a new identity would create its store; that is a
+	// directory and an empty database, nothing more, so it is fine.
+	v, err := viewFor(cfg, m, *user)
+	if err != nil {
+		return err
 	}
-	rep, err := importer.Import(ctx, st, subs, !*apply)
+	rep, err := importer.Import(ctx, v, subs, !*apply)
 	if err != nil {
 		return err
 	}
@@ -186,10 +218,69 @@ func importCmd(ctx context.Context, args []string) error {
 	if rep.DryRun {
 		mode = "Dry run, nothing written. Would import"
 	}
-	fmt.Printf("\n%s %d item(s) from %d subject(s): %d created, %d already present, %d subject(s) failed.\n",
-		mode, rep.Items, len(rep.Subjects), rep.Created, rep.Existing, rep.Failed)
+	fmt.Printf("\n%s %d item(s) from %d subject(s) into %s: %d created, %d already present, %d subject(s) failed.\n",
+		mode, rep.Items, len(rep.Subjects), v.Identity, rep.Created, rep.Existing, rep.Failed)
 	if rep.DryRun {
 		fmt.Println("Run again with --apply to write.")
+	}
+	return nil
+}
+
+func extractCmd(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("extract", flag.ContinueOnError)
+	user := userFlag(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, m, err := manager()
+	if err != nil {
+		return err
+	}
+	defer m.Close()
+	client := &llm.Client{BaseURL: cfg.LLM.BaseURL, Model: cfg.LLM.Model, APIKey: cfg.LLM.APIKey}
+	if !client.Enabled() {
+		return errors.New("no LLM configured: set llm.model and llm.api_key (PHIAL_LLM_MODEL, PHIAL_LLM_API_KEY)")
+	}
+	v, err := viewFor(cfg, m, *user)
+	if err != nil {
+		return err
+	}
+	pending, err := v.Own.PendingSessions(ctx, 500)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%d session(s) pending for %s\n", len(pending), v.Identity)
+	for _, se := range pending {
+		res, err := extract.Session(ctx, client, v, se)
+		errText := ""
+		if err != nil {
+			errText = err.Error()
+			fmt.Printf("  %s: FAILED: %v\n", se.ID, err)
+		} else {
+			fmt.Printf("  %s: %d candidates, %d created, %d confirmed, %d proposed, %d dropped\n", se.ID, res.Candidates, res.Created, res.Confirmed, res.Proposed, res.Dropped)
+		}
+		if err := v.Own.MarkExtracted(ctx, se.ID, errText); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func users() error {
+	_, m, err := manager()
+	if err != nil {
+		return err
+	}
+	defer m.Close()
+	ids, err := m.Identities()
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		fmt.Printf("%s\t%s\n", id, m.UserDir(id))
+	}
+	for _, p := range m.Pools() {
+		fmt.Printf("pool %s\tmembers=%s readers=%s subjects=%s\n", p.Name, strings.Join(p.Members, ","), strings.Join(p.Readers, ","), strings.Join(p.Subjects, ","))
 	}
 	return nil
 }
@@ -197,15 +288,20 @@ func importCmd(ctx context.Context, args []string) error {
 func rankReport(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("rank-report", flag.ContinueOnError)
 	limit := fs.Int("limit", 20, "how many phials to list")
+	user := userFlag(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	_, st, err := openStore()
+	cfg, m, err := manager()
 	if err != nil {
 		return err
 	}
-	defer st.Close()
-	rs, err := st.Recall(ctx, store.Query{Lowest: true, Limit: *limit})
+	defer m.Close()
+	v, err := viewFor(cfg, m, *user)
+	if err != nil {
+		return err
+	}
+	rs, err := v.Recall(ctx, store.Query{Lowest: true, Limit: *limit})
 	if err != nil {
 		return err
 	}
@@ -216,27 +312,36 @@ func rankReport(ctx context.Context, args []string) error {
 		if len(text) > 70 {
 			text = text[:70] + "…"
 		}
-		fmt.Fprintf(tw, "%.2f\t%.2f\t%.2f\t%s\t%s\t%s\n", r.Rank.Score, r.Rank.Freshness, r.Rank.Trust, r.ID, r.Subject, text)
+		sub := r.Subject
+		if r.Pool != "" {
+			sub += " (" + r.Pool + ")"
+		}
+		fmt.Fprintf(tw, "%.2f\t%.2f\t%.2f\t%s\t%s\t%s\n", r.Rank.Score, r.Rank.Freshness, r.Rank.Trust, r.ID, sub, text)
 	}
 	return tw.Flush()
 }
 
 func purge(ctx context.Context, args []string) error {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		return errors.New("usage: phial purge ID --reason TEXT")
+		return errors.New("usage: phial purge ID --reason TEXT [--user ID]")
 	}
 	id := args[0]
 	fs := flag.NewFlagSet("purge", flag.ContinueOnError)
 	reason := fs.String("reason", "", "why this phial must not exist (required; logged)")
+	user := userFlag(fs)
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	_, st, err := openStore()
+	cfg, m, err := manager()
 	if err != nil {
 		return err
 	}
-	defer st.Close()
-	if err := st.Purge(ctx, id, *reason); err != nil {
+	defer m.Close()
+	v, err := viewFor(cfg, m, *user)
+	if err != nil {
+		return err
+	}
+	if err := v.Purge(ctx, id, *reason); err != nil {
 		return err
 	}
 	fmt.Printf("Purged %s. The audit line has the ID, the time and the reason, not the text.\n", id)

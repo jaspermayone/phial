@@ -277,11 +277,21 @@ func headingPath(h string) string {
 	return p
 }
 
-// Import writes subjects into the store. With dryRun it only counts, and
+// Target is where an import lands: a store, or a tenant view that routes
+// each subject to the pool that owns it.
+type Target interface {
+	EnsureSubject(ctx context.Context, path, description string, aliases []string) (*store.Subject, error)
+	LinkRemote(ctx context.Context, subject, remote string) error
+	FindByText(ctx context.Context, subject, text string) (*store.Phial, error)
+	WasPurged(ctx context.Context, subject, text string) (bool, error)
+	Remember(ctx context.Context, in store.RememberInput) (*store.Phial, bool, error)
+}
+
+// Import writes subjects into the target. With dryRun it only counts, and
 // st may be nil when there is no database yet. A subject that fails is
 // reported and the others still import. Running it twice does not make
 // copies, and a purged phial is never imported again.
-func Import(ctx context.Context, st *store.Store, subs []LardSubject, dryRun bool) (*Report, error) {
+func Import(ctx context.Context, st Target, subs []LardSubject, dryRun bool) (*Report, error) {
 	rep := &Report{DryRun: dryRun}
 	for _, sub := range subs {
 		sr := SubjectReport{Subject: sub.Path}
@@ -293,7 +303,7 @@ func Import(ctx context.Context, st *store.Store, subs []LardSubject, dryRun boo
 			continue
 		}
 		if dryRun {
-			if st != nil {
+			if st != nil && st != Target((*store.Store)(nil)) {
 				if err := countExisting(ctx, st, sub.Path, items, &sr); err != nil {
 					sr.Error = err.Error()
 				}
@@ -322,7 +332,7 @@ func (r *Report) add(sr SubjectReport) {
 	}
 }
 
-func importSubject(ctx context.Context, st *store.Store, sub LardSubject, items []Item, sr *SubjectReport) error {
+func importSubject(ctx context.Context, st Target, sub LardSubject, items []Item, sr *SubjectReport) error {
 	if _, err := st.EnsureSubject(ctx, sub.Path, sub.Description, sub.Aliases); err != nil {
 		return err
 	}
@@ -360,6 +370,7 @@ func importSubject(ctx context.Context, st *store.Store, sub LardSubject, items 
 			Text:       it.Text,
 			Paths:      paths,
 			Origin:     "imported",
+			Actor:      "import",
 			Provenance: store.Provenance{Source: source},
 			CreatedAt:  created,
 		}); err != nil {
@@ -372,7 +383,7 @@ func importSubject(ctx context.Context, st *store.Store, sub LardSubject, items 
 
 // known reports whether an item is already in the store in any status, or
 // was purged. A purged phial must not come back from a re-import.
-func known(ctx context.Context, st *store.Store, subject, text string) (bool, error) {
+func known(ctx context.Context, st Target, subject, text string) (bool, error) {
 	if _, err := st.FindByText(ctx, subject, text); err == nil {
 		return true, nil
 	} else if !errors.Is(err, store.ErrNotFound) {
@@ -382,7 +393,7 @@ func known(ctx context.Context, st *store.Store, subject, text string) (bool, er
 }
 
 // countExisting fills a dry run's report with what an apply would skip.
-func countExisting(ctx context.Context, st *store.Store, subject string, items []Item, sr *SubjectReport) error {
+func countExisting(ctx context.Context, st Target, subject string, items []Item, sr *SubjectReport) error {
 	for _, it := range items {
 		skip, err := known(ctx, st, subject, it.Text)
 		if err != nil {

@@ -42,18 +42,20 @@
 
 {{define "nav"}}
 <a class="mark" href="/"><img src="/static/phial.svg" alt="" width="22" height="22"><span>phial</span></a>
-<p class="scope">Your memory</p>
+<p class="scope">{{if .Who}}{{.Who}}{{else}}Your memory{{end}}</p>
 <nav class="nav-main">
   <a href="/"{{if eq .Nav "overview"}} aria-current="page"{{end}}>Overview</a>
   <a href="/search"{{if eq .Nav "search"}} aria-current="page"{{end}}>Search</a>
   <a href="/low"{{if eq .Nav "attention"}} aria-current="page"{{end}}>Needs attention{{if .Attn}} <span class="count">{{.Attn}}</span>{{end}}</a>
+  <a href="/proposals"{{if eq .Nav "proposals"}} aria-current="page"{{end}}>Proposals{{if .Pending}} <span class="count">{{.Pending}}</span>{{end}}</a>
+  <a href="/activity"{{if eq .Nav "activity"}} aria-current="page"{{end}}>Activity</a>
   <a href="/remember{{if .Subject}}?subject={{q .Subject}}{{end}}"{{if eq .Nav "remember"}} aria-current="page"{{end}}>Remember</a>
 </nav>
 {{$cur := .Subject}}
 {{range .Groups}}
 <p class="nav-group">{{.Kind}}</p>
 <nav class="nav-subjects" aria-label="{{.Kind}}">
-  {{range .Subjects}}<a href="/s/{{.Path}}"{{if eq .Path $cur}} aria-current="page"{{end}}><span>{{short .Path}}</span><span class="n">{{.Active}}</span></a>{{end}}
+  {{range .Subjects}}<a href="/s/{{.Path}}"{{if eq .Path $cur}} aria-current="page"{{end}}><span>{{short .Path}}{{if .Pool}} <span class="pool">{{.Pool}}</span>{{end}}</span><span class="n">{{.Active}}</span></a>{{end}}
 </nav>
 {{end}}
 {{end}}
@@ -65,7 +67,7 @@
   <td class="what">
     <a href="/p/{{.ID}}">{{.Text}}</a>
     <span class="sub">
-      <span class="kind">{{.Kind}}</span>{{range .Paths}} · {{.}}{{end}}{{if ne .Status "active"}} · <span class="state">{{.Status}}</span>{{end}}
+      <span class="kind">{{.Kind}}</span>{{range .Paths}} · {{.}}{{end}}{{if .Pool}} · <span class="pool">shared: {{.Pool}}</span>{{end}}{{if .CreatedBy}} · by {{.CreatedBy}}{{end}}{{if ne .Status "active"}} · <span class="state">{{.Status}}</span>{{end}}
     </span>
   </td>
   <td class="flag">{{if warn .VerifyState}}<span class="pill warn">{{.VerifyState}}</span>{{else if and (eq .Status "active") (lt .Rank.Score 0.5)}}<span class="pill low">low</span>{{end}}</td>
@@ -90,4 +92,26 @@
   {{$cur := .}}
   {{range kinds}}<option value="{{.}}"{{if eq . $cur}} selected{{end}}>{{.}}</option>{{end}}
 </select>
+{{end}}
+
+{{define "wdiff"}}{{range .}}{{if eq .Kind 45}}<del>{{.Text}}</del> {{else if eq .Kind 43}}<ins>{{.Text}}</ins> {{else}}{{.Text}} {{end}}{{end}}{{end}}
+
+{{define "entries"}}
+<ol class="ledger">
+  {{range .}}
+  <li>
+    <div class="ledger-head">
+      <span class="actor">{{.Actor}}</span> <span class="action">{{.Action}}</span>
+      {{if .Subject}}<a href="/s/{{.Subject}}">{{.Subject}}</a>{{end}}
+      {{if .Pool}}<span class="pool">shared: {{.Pool}}</span>{{end}}
+      {{if .PhialID}}<a class="mono" href="/p/{{.PhialID}}">{{.PhialID}}</a>{{end}}
+      <span class="muted" title="{{when .At}}">{{age .At}}</span>
+    </div>
+    {{if and .TextBefore .TextAfter}}<p class="change">{{template "wdiff" (diff .TextBefore .TextAfter)}}</p>
+    {{else if .TextAfter}}<p class="change"><ins>{{.TextAfter}}</ins></p>
+    {{else if .TextBefore}}<p class="change muted">{{.TextBefore}}</p>{{end}}
+    {{if .Note}}<p class="muted note">{{.Note}}</p>{{end}}
+  </li>
+  {{else}}<li class="empty">No changes recorded.</li>{{end}}
+</ol>
 {{end}}

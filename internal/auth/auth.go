@@ -34,6 +34,8 @@ type Auth struct {
 	// set, a POST's Origin header must equal it; this works behind a proxy
 	// that rewrites Host. When it is empty, the Origin must match Host.
 	Origin string
+	// Primary is the identity a token sign-in or mode none acts as.
+	Primary string
 }
 
 // New builds an Auth. An empty token disables auth (mode "none").
@@ -81,18 +83,20 @@ func (a *Auth) sign(parts ...string) string {
 
 // Session is a valid UI login.
 type Session struct {
+	Subject string // who is signed in
 	Expires time.Time
 	// CSRF is the token every form in this session must send back.
 	CSRF string
 }
 
-// StartSession sets the session cookie after a successful login.
-func (a *Auth) StartSession(w http.ResponseWriter) {
+// StartSession sets the session cookie after a successful login for subject.
+func (a *Auth) StartSession(w http.ResponseWriter, subject string) {
 	exp := a.Now().Add(SessionTTL).Unix()
 	e := strconv.FormatInt(exp, 10)
+	sub := base64.RawURLEncoding.EncodeToString([]byte(subject))
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
-		Value:    e + "." + a.sign("session", e),
+		Value:    e + "." + sub + "." + a.sign("session", e, sub),
 		Path:     "/",
 		Expires:  time.Unix(exp, 0),
 		HttpOnly: true,
@@ -113,22 +117,28 @@ func (a *Auth) EndSession(w http.ResponseWriter) {
 // is forged or expired. With auth disabled every request has a session.
 func (a *Auth) SessionFrom(r *http.Request) *Session {
 	if !a.enabled {
-		return &Session{Expires: a.Now().Add(SessionTTL), CSRF: a.sign("csrf", "none")}
+		return &Session{Subject: a.Primary, Expires: a.Now().Add(SessionTTL), CSRF: a.sign("csrf", "none")}
 	}
 	c, err := r.Cookie(CookieName)
 	if err != nil {
 		return nil
 	}
-	e, sig, ok := strings.Cut(c.Value, ".")
-	if !ok || !hmac.Equal([]byte(sig), []byte(a.sign("session", e))) {
+	parts := strings.Split(c.Value, ".")
+	if len(parts) != 3 || !hmacEqual(parts[2], a.sign("session", parts[0], parts[1])) {
 		return nil
 	}
-	exp, err := strconv.ParseInt(e, 10, 64)
+	exp, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil || a.Now().Unix() >= exp {
 		return nil
 	}
-	return &Session{Expires: time.Unix(exp, 0), CSRF: a.sign("csrf", e)}
+	sub, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil
+	}
+	return &Session{Subject: string(sub), Expires: time.Unix(exp, 0), CSRF: a.sign("csrf", parts[0], parts[1])}
 }
+
+func hmacEqual(a, b string) bool { return hmac.Equal([]byte(a), []byte(b)) }
 
 // CheckCSRF validates a state-changing UI request: the form token must
 // match the session, and an Origin header, when sent, must be this host.

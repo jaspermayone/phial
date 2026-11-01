@@ -44,15 +44,15 @@ func TestSessionRoundTripAndExpiry(t *testing.T) {
 	a := New(tok, true)
 	a.Now = func() time.Time { return now }
 	w := httptest.NewRecorder()
-	a.StartSession(w)
+	a.StartSession(w, "jsp")
 	c := cookieFrom(w)
 	if c == nil || !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteStrictMode {
 		t.Fatalf("cookie = %+v", c)
 	}
 	r := httptest.NewRequest("GET", "/", nil)
 	r.AddCookie(c)
-	if a.SessionFrom(r) == nil {
-		t.Fatal("valid session rejected")
+	if s := a.SessionFrom(r); s == nil || s.Subject != "jsp" {
+		t.Fatalf("valid session rejected or wrong subject: %+v", s)
 	}
 
 	forged := *c
@@ -77,7 +77,7 @@ func TestSessionRoundTripAndExpiry(t *testing.T) {
 func TestCSRF(t *testing.T) {
 	a := New(tok, false)
 	w := httptest.NewRecorder()
-	a.StartSession(w)
+	a.StartSession(w, "jsp")
 	get := httptest.NewRequest("GET", "/", nil)
 	get.AddCookie(cookieFrom(w))
 	s := a.SessionFrom(get)

@@ -3,10 +3,10 @@
 <p class="crumbs"><a href="/">Overview</a> / {{$d.Subject.Kind}}</p>
 <div class="title-row">
   <div>
-    <h1 class="mono-title">{{$d.Subject.Path}}</h1>
-    <p class="lede">{{if $d.Subject.Description}}{{$d.Subject.Description}}{{else}}No description yet.{{end}}</p>
+    <h1 class="mono-title">{{$d.Subject.Path}}{{if $d.Pool}} <span class="pool">shared: {{$d.Pool}}</span>{{end}}</h1>
+    <p class="lede">{{if $d.Subject.Description}}{{$d.Subject.Description}}{{else}}No description yet.{{end}}{{if $d.ReadOnly}} You can read this pool but not write it.{{end}}</p>
   </div>
-  <a class="button primary" href="/remember?subject={{q $d.Subject.Path}}">Remember here</a>
+  {{if not $d.ReadOnly}}<a class="button primary" href="/remember?subject={{q $d.Subject.Path}}">Remember here</a>{{end}}
 </div>
 
 {{if or $d.Subject.Aliases $d.Remotes $d.Children}}
@@ -20,6 +20,7 @@
 <nav class="tabs" aria-label="Status">
   <a href="/s/{{$d.Subject.Path}}"{{if eq $d.Status ""}} aria-current="page"{{end}}>Active <span class="n">{{$d.Subject.Active}}</span></a>
   <a href="/s/{{$d.Subject.Path}}?status=all"{{if eq $d.Status "all"}} aria-current="page"{{end}}>With history</a>
+  <a href="/activity?subject={{q $d.Subject.Path}}">Activity</a>
 </nav>
 
 {{if $d.Outline}}

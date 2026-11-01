@@ -2,7 +2,6 @@ package mcpserver
 
 import (
 	"context"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -11,18 +10,25 @@ import (
 
 	"github.com/jaspermayone/phial/internal/rank"
 	"github.com/jaspermayone/phial/internal/store"
+	"github.com/jaspermayone/phial/internal/tenant"
 )
 
-func connect(t *testing.T) (*mcp.ClientSession, *store.Store) {
+func connect(t *testing.T) (*mcp.ClientSession, *tenant.View) {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "phial.db"), rank.Default())
+	m, err := tenant.New(t.TempDir(), rank.Default(), []tenant.Pool{
+		{Name: "crane", Members: []string{"jsp"}, Subjects: []string{"areas/crane"}},
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { st.Close() })
+	t.Cleanup(func() { m.Close() })
+	v, err := m.View("jsp")
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
 	ct, stt := mcp.NewInMemoryTransports()
-	if _, err := New(st).Connect(ctx, stt, nil); err != nil {
+	if _, err := New(v).Connect(ctx, stt, nil); err != nil {
 		t.Fatal(err)
 	}
 	cs, err := mcp.NewClient(&mcp.Implementation{Name: "test"}, nil).Connect(ctx, ct, nil)
@@ -30,7 +36,7 @@ func connect(t *testing.T) (*mcp.ClientSession, *store.Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { cs.Close() })
-	return cs, st
+	return cs, v
 }
 
 func call(t *testing.T, cs *mcp.ClientSession, name string, args map[string]any) (string, bool) {
@@ -60,7 +66,7 @@ func TestToolsListed(t *testing.T) {
 	for _, tool := range res.Tools {
 		got[tool.Name] = true
 	}
-	for _, want := range []string{"get_context", "recall", "outline", "read", "remember", "supersede", "retract", "confirm"} {
+	for _, want := range []string{"get_context", "recall", "outline", "read", "remember", "supersede", "retract", "confirm", "changes", "review"} {
 		if !got[want] {
 			t.Errorf("tool %s missing", want)
 		}
@@ -71,7 +77,7 @@ func TestToolsListed(t *testing.T) {
 }
 
 func TestRememberRecallSupersedeFlow(t *testing.T) {
-	cs, st := connect(t)
+	cs, v := connect(t)
 	out, isErr := call(t, cs, "remember", map[string]any{
 		"subject": "areas/phial", "text": "Deploys to alastor at phial.hogwarts.dev", "kind": "decision",
 		"paths": []string{"deploy.target"}, "loci": []string{"nix/module.nix#services.phial"},
@@ -84,20 +90,20 @@ func TestRememberRecallSupersedeFlow(t *testing.T) {
 	if id == "" {
 		t.Fatalf("no id in %q", out)
 	}
-	p, err := st.Get(context.Background(), id)
+	p, err := v.Get(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(p.Loci) != 1 || p.Loci[0].Symbol != "services.phial" || len(p.Provenance) != 1 || p.Provenance[0].Repo != "github.com/jaspermayone/phial" {
+	if len(p.Loci) != 1 || p.Loci[0].Symbol != "services.phial" || len(p.Provenance) != 1 || p.Provenance[0].Repo != "github.com/jaspermayone/phial" || p.CreatedBy != "jsp" {
 		t.Fatalf("stored phial = %+v", p)
 	}
 
 	out, _ = call(t, cs, "recall", map[string]any{"query": "where does it deploy", "explain": true})
-	if !strings.Contains(out, id) || !strings.Contains(out, "score") {
-		t.Fatalf("recall did not find it with score: %s", out)
+	if !strings.Contains(out, id) || !strings.Contains(out, "score") || !strings.Contains(out, "by jsp") {
+		t.Fatalf("recall did not find it with score and actor: %s", out)
 	}
 
-	out, isErr = call(t, cs, "supersede", map[string]any{"id": id, "text": "Deploys to alastor behind Traefik"})
+	out, isErr = call(t, cs, "supersede", map[string]any{"id": id, "text": "Deploys to alastor behind Traefik", "why": "proxy added"})
 	if isErr {
 		t.Fatalf("supersede: %s", out)
 	}
@@ -109,11 +115,10 @@ func TestRememberRecallSupersedeFlow(t *testing.T) {
 	if strings.Contains(out, id) || !strings.Contains(out, newID[1]) {
 		t.Fatalf("recall after supersede: %s", out)
 	}
-	out, _ = call(t, cs, "recall", map[string]any{"query": "deploys alastor", "status": "all"})
-	if !strings.Contains(out, "SUPERSEDED by "+newID[1]) {
-		t.Fatalf("history not shown: %s", out)
+	out, _ = call(t, cs, "changes", map[string]any{"id": newID[1]})
+	if !strings.Contains(out, "jsp · supersede") || !strings.Contains(out, "proxy added") || !strings.Contains(out, "{+behind Traefik+}") {
+		t.Fatalf("changes: %s", out)
 	}
-
 	if out, isErr = call(t, cs, "retract", map[string]any{"id": newID[1]}); !isErr {
 		t.Fatalf("retract without a reason should fail: %s", out)
 	}
@@ -122,15 +127,41 @@ func TestRememberRecallSupersedeFlow(t *testing.T) {
 	}
 }
 
+func TestPoolsAndReview(t *testing.T) {
+	cs, v := connect(t)
+	ctx := context.Background()
+	out, _ := call(t, cs, "remember", map[string]any{"subject": "areas/crane", "text": "The JS engine lives in crates/crane-js"})
+	id := idRe.FindString(out)
+	if !strings.Contains(out, "(shared: crane)") {
+		t.Fatalf("pool label missing: %s", out)
+	}
+	if _, err := v.Propose(ctx, store.Proposal{TargetID: id, Text: "The JS engine lives in crates/crane-js, with tests in tests/js", Reason: "test", ProposedBy: "extract"}); err != nil {
+		t.Fatal(err)
+	}
+	out, _ = call(t, cs, "review", map[string]any{})
+	prID := regexp.MustCompile(`pr_[0-9a-f]{24}`).FindString(out)
+	if prID == "" || !strings.Contains(out, "tests/js+}") {
+		t.Fatalf("review list: %s", out)
+	}
+	out, isErr := call(t, cs, "review", map[string]any{"id": prID, "action": "apply"})
+	if isErr || !strings.Contains(out, "Applied") {
+		t.Fatalf("apply: %s", out)
+	}
+	out, _ = call(t, cs, "get_context", map[string]any{"project": "areas/crane"})
+	if !strings.Contains(out, "shared pool") || !strings.Contains(out, "tests/js") {
+		t.Fatalf("get_context for a pool: %s", out)
+	}
+}
+
 func TestGetContext(t *testing.T) {
-	cs, st := connect(t)
+	cs, v := connect(t)
 	ctx := context.Background()
 	for _, in := range []store.RememberInput{
 		{Subject: "profile", Text: "Name: Jasper"},
 		{Subject: "topics/preferences", Kind: "preference", Text: "No em dashes."},
 		{Subject: "areas/phial", Text: "Go and SQLite", Paths: []string{"stack"}, Provenance: store.Provenance{Repo: "github.com/jaspermayone/phial"}},
 	} {
-		if _, _, err := st.Remember(ctx, in); err != nil {
+		if _, _, err := v.Remember(ctx, in); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -150,14 +181,14 @@ func TestGetContext(t *testing.T) {
 }
 
 func TestReadAndOutline(t *testing.T) {
-	cs, st := connect(t)
+	cs, v := connect(t)
 	ctx := context.Background()
 	for _, in := range []store.RememberInput{
 		{Subject: "areas/homelab", Text: "pve01 is an R630", Paths: []string{"proxmox.hardware"}},
 		{Subject: "areas/homelab", Text: "VLAN 20 holds servers", Paths: []string{"network.vlans"}},
 		{Subject: "areas/homelab/netbox", Text: "netbox runs on ollivander"},
 	} {
-		if _, _, err := st.Remember(ctx, in); err != nil {
+		if _, _, err := v.Remember(ctx, in); err != nil {
 			t.Fatal(err)
 		}
 	}
