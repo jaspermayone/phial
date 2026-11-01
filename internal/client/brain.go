@@ -12,26 +12,16 @@ import (
 )
 
 // brainRepos lists the repos under the roots that have an entire-brain, by
-// asking `entire brain path` for each git repo found one level deep.
+// asking `entire brain path` for each git repo found up to repoDepth levels
+// below a root. Hidden directories and node_modules are not entered, and the
+// walk does not go below a repo.
 func brainRepos(roots []string) []string {
 	if _, err := exec.LookPath("entire"); err != nil {
 		return nil
 	}
 	var out []string
 	for _, r := range roots {
-		r = expandHome(r)
-		entries, err := os.ReadDir(r)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			dir := filepath.Join(r, e.Name())
-			if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
-				continue
-			}
+		for _, dir := range findRepos(expandHome(r), repoDepth) {
 			cmd := exec.Command("entire", "brain", "path", dir)
 			cmd.Env = append(os.Environ(), "ENTIRE_BRAIN_NO_EGRESS=1")
 			p, err := cmd.Output()
@@ -42,6 +32,35 @@ func brainRepos(roots []string) []string {
 				out = append(out, dir)
 			}
 		}
+	}
+	return out
+}
+
+// repoDepth is how many directory levels below a root findRepos looks:
+// ~/dev/<repo> and ~/dev/<group>/<repo> and one more.
+const repoDepth = 3
+
+// findRepos returns the git repos at most depth levels below dir, in
+// lexical order. A directory with a .git entry is a repo and is not entered.
+func findRepos(dir string, depth int) []string {
+	if depth <= 0 {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") || e.Name() == "node_modules" {
+			continue
+		}
+		sub := filepath.Join(dir, e.Name())
+		if _, err := os.Lstat(filepath.Join(sub, ".git")); err == nil {
+			out = append(out, sub)
+			continue
+		}
+		out = append(out, findRepos(sub, depth-1)...)
 	}
 	return out
 }
