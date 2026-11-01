@@ -14,8 +14,8 @@ import (
 func manager(t *testing.T) *Manager {
 	t.Helper()
 	m, err := New(t.TempDir(), rank.Default(), []Pool{
-		{Name: "crane", Members: []string{"jsp", "owen"}, Readers: []string{"guest"}, Subjects: []string{"areas/crane"}},
-	}, []string{"jsp", "owen", "guest"})
+		{Name: "crane", Members: []string{"jsp", "teammate"}, Readers: []string{"guest"}, Subjects: []string{"areas/crane"}},
+	}, []string{"jsp", "teammate", "guest"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestPoolRoutingAndAttribution(t *testing.T) {
 	m := manager(t)
 	ctx := context.Background()
 	jsp, _ := m.View("jsp")
-	owen, _ := m.View("owen")
+	teammate, _ := m.View("teammate")
 	guest, _ := m.View("guest")
 
 	shared, _, err := jsp.Remember(ctx, store.RememberInput{Subject: "areas/crane/ui", Text: "the toolbar is in crates/crane-ui"})
@@ -56,18 +56,18 @@ func TestPoolRoutingAndAttribution(t *testing.T) {
 		t.Fatalf("routing: shared=%q private=%q by=%q", shared.Pool, private.Pool, shared.CreatedBy)
 	}
 
-	// owen sees the shared phial but not jsp's private one.
-	got, _ := owen.Recall(ctx, store.Query{Text: "toolbar alastor"})
+	// teammate sees the shared phial but not jsp's private one.
+	got, _ := teammate.Recall(ctx, store.Query{Text: "toolbar alastor"})
 	if len(got) != 1 || got[0].ID != shared.ID || got[0].Pool != "crane" {
-		t.Fatalf("owen sees %v", got)
+		t.Fatalf("teammate sees %v", got)
 	}
-	// owen edits it; the ledger says so.
-	nw, err := owen.Supersede(ctx, store.SupersedeInput{ID: shared.ID, Text: "the toolbar moved to crates/crane-shell"})
-	if err != nil || nw.CreatedBy != "owen" {
-		t.Fatalf("owen supersede: %v %+v", err, nw)
+	// teammate edits it; the ledger says so.
+	nw, err := teammate.Supersede(ctx, store.SupersedeInput{ID: shared.ID, Text: "the toolbar moved to crates/crane-shell"})
+	if err != nil || nw.CreatedBy != "teammate" {
+		t.Fatalf("teammate supersede: %v %+v", err, nw)
 	}
 	es, _ := jsp.Ledger(ctx, "", "areas/crane", "", 0)
-	if len(es) != 2 || es[0].Actor != "owen" || es[0].Pool != "crane" || es[1].Actor != "jsp" {
+	if len(es) != 2 || es[0].Actor != "teammate" || es[0].Pool != "crane" || es[1].Actor != "jsp" {
 		t.Fatalf("ledger = %+v", es)
 	}
 	// A reader cannot write.

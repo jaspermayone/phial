@@ -410,23 +410,23 @@ func TestLedgerRecordsEveryChange(t *testing.T) {
 	if p.CreatedBy != "jsp" {
 		t.Fatalf("created_by = %q", p.CreatedBy)
 	}
-	must(s.Confirm(ctx, p.ID, "owen"))
-	n := must(s.Supersede(ctx, SupersedeInput{ID: p.ID, Text: "uses rust and c++", Actor: "owen", Note: "added c++"}))
+	must(s.Confirm(ctx, p.ID, "teammate"))
+	n := must(s.Supersede(ctx, SupersedeInput{ID: p.ID, Text: "uses rust and c++", Actor: "teammate", Note: "added c++"}))
 	must(s.Retract(ctx, n.ID, "rewrite", "jsp"))
 	es := must(s.Ledger(ctx, "", "areas/crane", "", 0))
 	var actions []string
 	for _, e := range es {
 		actions = append(actions, e.Actor+":"+e.Action)
 	}
-	want := "jsp:retract owen:supersede owen:confirm jsp:remember"
+	want := "jsp:retract teammate:supersede teammate:confirm jsp:remember"
 	if got := strings.Join(actions, " "); got != want {
 		t.Fatalf("ledger = %q, want %q", got, want)
 	}
 	if es[1].TextBefore != "uses rust" || es[1].TextAfter != "uses rust and c++" || es[1].Note != "added c++" {
 		t.Fatalf("supersede entry = %+v", es[1])
 	}
-	if by := must(s.Ledger(ctx, "", "", "owen", 0)); len(by) != 2 {
-		t.Fatalf("owen's entries = %d", len(by))
+	if by := must(s.Ledger(ctx, "", "", "teammate", 0)); len(by) != 2 {
+		t.Fatalf("teammate's entries = %d", len(by))
 	}
 }
 

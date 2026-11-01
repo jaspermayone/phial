@@ -121,14 +121,14 @@ allowed_users = ["jsp"]
 ui_login = "oauth"
 [[pools]]
 name = "crane"
-members = ["jsp", "owen"]
+members = ["jsp", "teammate"]
 subjects = ["areas/crane"]
 `), 0o600)
 	c, err := load(path, env(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Auth.UILogin != "oauth" || len(c.Pools) != 1 || c.Pools[0].Members[1] != "owen" || c.Auth.AllowedUsers[0] != "jsp" {
+	if c.Auth.UILogin != "oauth" || len(c.Pools) != 1 || c.Pools[0].Members[1] != "teammate" || c.Auth.AllowedUsers[0] != "jsp" {
 		t.Fatalf("config = %+v", c)
 	}
 }

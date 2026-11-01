@@ -97,7 +97,7 @@ A shared pool:
 ```toml
 [[pools]]
 name = "crane"
-members = ["jsp", "owen"]      # read and write
+members = ["jsp", "teammate"]      # read and write
 readers = ["guest"]            # read only
 subjects = ["areas/crane"]     # and its children
 ```
