@@ -348,8 +348,10 @@ sequenceDiagram
 - The client reads Entire checkpoints first. For repos without Entire, it falls back to the raw
   Claude Code and Codex transcript files, as lard does.
 - Redaction runs on the client, before upload. Session text is untrusted input to the extractor.
-- Extraction runs on the server, not on the client. The server calls an OpenAI-compatible endpoint
-  with its own API key (`PHIAL_LLM_API_KEY`, from agenix on alastor). Extraction runs when no
+- Extraction runs on the server, not on the client. The server calls the Claude API through the
+  official SDK (`llm.provider = "anthropic"`, model `claude-haiku-5-5`), or any OpenAI-compatible
+  endpoint (`llm.provider = "openai"`), with its own API key (`PHIAL_LLM_API_KEY`, from agenix on
+  alastor). Extraction runs when no
   client is on, and clients do not need an agent or a model key.
 - Extraction keeps lard's prompt rules: durable facts only, concrete specifics, the sensitivity
   blocklist, and routing to existing subjects. The output is phials, not rewritten files.

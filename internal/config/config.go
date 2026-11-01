@@ -60,8 +60,11 @@ type Auth struct {
 	UILogin string `toml:"ui_login"`
 }
 
-// LLM is the OpenAI-compatible endpoint extraction uses. Empty disables it.
+// LLM is the model extraction uses. No key disables extraction.
 type LLM struct {
+	// Provider is "anthropic" (the Claude API, default) or "openai" (any
+	// OpenAI-compatible endpoint, such as OpenRouter).
+	Provider   string `toml:"provider"`
 	BaseURL    string `toml:"base_url"`
 	Model      string `toml:"model"`
 	APIKey     string `toml:"api_key"`
@@ -167,6 +170,7 @@ func load(path string, getenv func(string) string) (*Config, error) {
 		"PHIAL_OAUTH_CLIENT_SECRET":      &c.Auth.ClientSecret,
 		"PHIAL_OAUTH_CLIENT_SECRET_FILE": &c.Auth.ClientSecretFile,
 		"PHIAL_UI_LOGIN":                 &c.Auth.UILogin,
+		"PHIAL_LLM_PROVIDER":             &c.LLM.Provider,
 		"PHIAL_LLM_BASE_URL":             &c.LLM.BaseURL,
 		"PHIAL_LLM_MODEL":                &c.LLM.Model,
 		"PHIAL_LLM_API_KEY":              &c.LLM.APIKey,
@@ -220,7 +224,10 @@ func load(path string, getenv func(string) string) (*Config, error) {
 			return nil, fmt.Errorf("llm.api_key_file: %w", err)
 		}
 	}
-	if c.LLM.BaseURL == "" && c.LLM.APIKey != "" {
+	if c.LLM.Provider == "" {
+		c.LLM.Provider = "anthropic"
+	}
+	if c.LLM.Provider == "openai" && c.LLM.BaseURL == "" {
 		c.LLM.BaseURL = "https://openrouter.ai/api/v1"
 	}
 	c.Ranking = c.Ranking.Merge()
@@ -277,6 +284,9 @@ func (c *Config) validate() error {
 	}
 	if c.LLM.APIKey != "" && c.LLM.Model == "" {
 		return errors.New("llm: an api key is set but no model (llm.model / PHIAL_LLM_MODEL)")
+	}
+	if c.LLM.Provider != "anthropic" && c.LLM.Provider != "openai" {
+		return fmt.Errorf("llm: provider must be anthropic or openai, not %q", c.LLM.Provider)
 	}
 	return c.Ranking.Validate()
 }

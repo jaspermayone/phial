@@ -85,8 +85,9 @@ The server reads `$PHIAL_CONFIG`, or `~/.config/phial/config.toml`. Environment 
 | `auth.client_secret` | `PHIAL_OAUTH_CLIENT_SECRET` | | its secret (or `client_secret_file`) |
 | `auth.accepted_audiences` | `PHIAL_ACCEPTED_AUDIENCES` | | audiences besides `<public_url>/mcp` |
 | `auth.ui_login` | `PHIAL_UI_LOGIN` | `token` | `token` or `oauth` (needs `<public_url>/auth/callback` registered) |
-| `llm.model` | `PHIAL_LLM_MODEL` | | extraction model; empty keeps extraction off |
-| `llm.base_url` | `PHIAL_LLM_BASE_URL` | OpenRouter | OpenAI-compatible endpoint |
+| `llm.provider` | `PHIAL_LLM_PROVIDER` | `anthropic` | `anthropic` (the Claude API) or `openai` (any OpenAI-compatible endpoint) |
+| `llm.model` | `PHIAL_LLM_MODEL` | | extraction model, e.g. `claude-haiku-5-5`; empty keeps extraction off |
+| `llm.base_url` | `PHIAL_LLM_BASE_URL` | OpenRouter for `openai` | endpoint; optional override for `anthropic` |
 | `llm.api_key` | `PHIAL_LLM_API_KEY` | | its key (or `api_key_file`) |
 | `extract.interval`, `extract.quiet` | | `1m`, `5m` | worker cadence and the quiet period |
 | `ranking.*` | | design 7.1 | half-lives, floors and trust values |

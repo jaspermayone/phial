@@ -136,7 +136,7 @@ func serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	client := &llm.Client{BaseURL: cfg.LLM.BaseURL, Model: cfg.LLM.Model, APIKey: cfg.LLM.APIKey}
+	client := &llm.Client{Provider: cfg.LLM.Provider, BaseURL: cfg.LLM.BaseURL, Model: cfg.LLM.Model, APIKey: cfg.LLM.APIKey}
 	worker := &extract.Worker{Manager: m, Client: client, Interval: time.Duration(cfg.Extract.Interval), Quiet: time.Duration(cfg.Extract.Quiet)}
 	go worker.Run(ctx)
 
@@ -241,9 +241,9 @@ func extractCmd(ctx context.Context, args []string) error {
 		return err
 	}
 	defer m.Close()
-	client := &llm.Client{BaseURL: cfg.LLM.BaseURL, Model: cfg.LLM.Model, APIKey: cfg.LLM.APIKey}
+	client := &llm.Client{Provider: cfg.LLM.Provider, BaseURL: cfg.LLM.BaseURL, Model: cfg.LLM.Model, APIKey: cfg.LLM.APIKey}
 	if !client.Enabled() {
-		return errors.New("no LLM configured: set llm.model and llm.api_key (PHIAL_LLM_MODEL, PHIAL_LLM_API_KEY)")
+		return errors.New("no LLM configured: set llm.model and llm.api_key (PHIAL_LLM_MODEL, PHIAL_LLM_API_KEY); provider anthropic needs no base_url")
 	}
 	v, err := viewFor(cfg, m, *user)
 	if err != nil {

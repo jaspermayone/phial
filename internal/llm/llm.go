@@ -1,5 +1,6 @@
-// Package llm is a small client for an OpenAI-compatible chat endpoint.
-// Extraction is the only caller.
+// Package llm is the model client extraction uses. Provider "anthropic"
+// talks to the Claude API through the official SDK; "openai" talks to any
+// OpenAI-compatible chat endpoint, such as OpenRouter.
 package llm
 
 import (
@@ -14,23 +15,36 @@ import (
 	"time"
 )
 
-// Client talks to one endpoint with one model.
+// Client talks to one provider with one model.
 type Client struct {
-	BaseURL string
-	Model   string
-	APIKey  string
-	HTTP    *http.Client
+	Provider string // anthropic | openai
+	BaseURL  string // openai: required; anthropic: optional override
+	Model    string
+	APIKey   string
+	HTTP     *http.Client
 }
 
 // Enabled reports whether the client has what it needs to run.
 func (c *Client) Enabled() bool {
-	return c != nil && c.BaseURL != "" && c.Model != "" && c.APIKey != ""
+	if c == nil || c.Model == "" || c.APIKey == "" {
+		return false
+	}
+	switch c.Provider {
+	case "anthropic":
+		return true
+	case "openai":
+		return c.BaseURL != ""
+	}
+	return false
 }
 
 // Complete sends one system and one user message and returns the reply.
 func (c *Client) Complete(ctx context.Context, system, user string, maxTokens int) (string, error) {
 	if !c.Enabled() {
 		return "", errors.New("llm: not configured")
+	}
+	if c.Provider == "anthropic" {
+		return c.completeAnthropic(ctx, system, user, maxTokens)
 	}
 	body, _ := json.Marshal(map[string]any{
 		"model":       c.Model,
