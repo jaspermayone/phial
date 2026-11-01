@@ -37,7 +37,7 @@ sessions for extraction, links them to the commits made during the session (with
 anchors, and serves `brief` and `verify` to a local agent over MCP.
 
 ```sh
-export PHIAL_CLIENT_ID=<client> PHIAL_CLIENT_SECRET=<secret>
+export PHIAL_CLIENT_ID=<public client>   # PHIAL_CLIENT_SECRET only for a confidential client
 phial-client login --url https://phial.hogwarts.dev --root ~/dev
 phial-client sync                 # new sessions since the last sync
 phial-client service install      # sync every 5 minutes (launchd or systemd --user)
