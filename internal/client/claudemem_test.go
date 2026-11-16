@@ -40,15 +40,23 @@ func TestMemorySessionsChunkAndStableIDs(t *testing.T) {
 	big := strings.Repeat("x", memoryChunk/2+1)
 	notes := []memoryNote{{name: "a.md", text: big}, {name: "b.md", text: big}, {name: "c.md", text: "small"}}
 	now := time.Now()
-	ses := MemorySessions(notes, "/w", "git@example:r", now)
+	ses := MemorySessions("-Users-x-dev-r", notes, "/w", "git@example:r", now)
 	if len(ses) != 2 {
 		t.Fatalf("want 2 sessions, got %d", len(ses))
 	}
 	if !strings.Contains(ses[1].Turns[0].Text, "### c.md") || ses[0].Source != MemorySource || ses[0].Repo != "git@example:r" {
 		t.Fatalf("bad sessions: %+v", ses[1])
 	}
-	again := MemorySessions(notes, "/w", "git@example:r", now.Add(time.Hour))
+	again := MemorySessions("-Users-x-dev-r", notes, "/w", "git@example:r", now.Add(time.Hour))
 	if again[0].ID != ses[0].ID || ses[0].ID == ses[1].ID {
 		t.Fatalf("ids not stable per text: %s %s %s", ses[0].ID, again[0].ID, ses[1].ID)
+	}
+	if !strings.HasPrefix(ses[0].Turns[0].Text, "Claude Code project folder: -Users-x-dev-r\n") {
+		t.Fatalf("session text lacks the project folder: %.80s", ses[0].Turns[0].Text)
+	}
+	other := MemorySessions("-Users-x-dev-q", notes[2:], "/q", "git@example:q", now)
+	same := MemorySessions("-Users-x-dev-q", notes[2:], "/q", "git@example:r", now)
+	if other[0].ID == same[0].ID {
+		t.Fatal("two repos with the same note text share a session id")
 	}
 }

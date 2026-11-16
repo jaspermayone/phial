@@ -20,9 +20,10 @@ import (
 // user's words.
 const MemorySource = "claude-memory"
 
-// memoryChunk is the most text one memory session carries. A project with
-// more changed notes than this sends several sessions.
-const memoryChunk = 60_000
+// memoryChunk is the most note text one memory session carries. A project
+// with more changed notes than this sends several sessions. It is small so
+// that the facts of one session fit in one extraction reply.
+const memoryChunk = 15_000
 
 // memoryNote is one changed memory file.
 type memoryNote struct {
@@ -94,18 +95,21 @@ func firstCWD(path string) string {
 	return ""
 }
 
-// MemorySessions groups notes into sessions of at most memoryChunk
-// characters. Each session's ID is the hash of its text, so the server
-// stores each version once.
-func MemorySessions(notes []memoryNote, cwd, repo string, now time.Time) []store.Session {
+// MemorySessions groups the notes of the Claude Code project folder
+// project into sessions of at most memoryChunk characters of notes. Each
+// session's text starts with the folder name, which is the only hint of
+// the project when its transcripts are gone. The ID is the hash of that
+// text and the repo, so the server stores each version once per project.
+func MemorySessions(project string, notes []memoryNote, cwd, repo string, now time.Time) []store.Session {
+	header := "Claude Code project folder: " + project + "\n\n"
 	var out []store.Session
 	var b strings.Builder
 	emit := func() {
 		if b.Len() == 0 {
 			return
 		}
-		text := b.String()
-		sum := sha256.Sum256([]byte(text))
+		text := header + b.String()
+		sum := sha256.Sum256([]byte(repo + "\x00" + text))
 		h := hex.EncodeToString(sum[:])
 		out = append(out, store.Session{
 			ID:        MemorySource + ":" + h[:20],
@@ -145,7 +149,7 @@ func SyncClaudeMemory(ctx context.Context, cfg *Config, api *API, log func(strin
 		if cwd != "" {
 			repo = gitRemote(cwd)
 		}
-		if _, err := api.Ingest(ctx, MemorySessions(notes, cwd, repo, now)); err != nil {
+		if _, err := api.Ingest(ctx, MemorySessions(filepath.Base(filepath.Dir(dir)), notes, cwd, repo, now)); err != nil {
 			return sent, err
 		}
 		for _, n := range notes {

@@ -100,6 +100,7 @@ CLAUDE CODE MEMORY NOTES. Some inputs are memory notes that Claude Code saved wh
 - The agent wrote the notes, but they record what the user said, decided or confirmed. Treat them as grounded, in place of the user's own words.
 - A note can hold several facts. Emit one phial per durable fact.
 - Route by the front matter "type": user goes to profile, feedback is a preference or convention, project goes to the area of the repository named above, reference is a fact. Facts with no project scope go to a topic.
+- The first line names the Claude Code project folder: the project's path with each "/" and "." written as "-". When no repository is named, use the folder to find the matching existing area. If none fits, name the new area after the last part of the path.
 - Keep a short "**Why:**" reason in the fact text. Drop "[[links]]", file names and front matter fields from the text.
 - Many notes repeat phials that already exist. Emit them anyway, worded plainly; the server confirms a match.
 - Skip notes about one task, or about a date that has passed.
