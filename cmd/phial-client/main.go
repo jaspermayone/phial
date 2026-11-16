@@ -25,13 +25,15 @@ Usage:
   phial-client login --url URL [--token T] [--root DIR...]   device-code login (or a static token)
   phial-client logout
   phial-client status
-  phial-client sync [--all] [--quiet]        upload new Claude Code sessions and entire-brain memories
+  phial-client sync [--all] [--quiet]        upload new Claude Code sessions, memory notes and entire-brain memories
   phial-client daemon [--interval 5m]        sync in a loop
   phial-client service install|uninstall|status
   phial-client verify [DIR]                  check this repo's code anchors
   phial-client brief "task" [--dir DIR]      context for a task
   phial-client remember --subject S "text"   store one phial (--kind, --path, --locus repeatable)
   phial-client recall "words" [--subject S]  search phials
+  phial-client granola login|status|sync|logout
+                                             connect Granola: each sync sends its agent brief
   phial-client mcp                           local MCP server (stdio) with brief and verify
   phial-client version
 
@@ -67,6 +69,7 @@ func run(ctx context.Context, cmd string, args []string) error {
 		fmt.Print(usage)
 		return nil
 	}
+	client.Version = version
 	cfg, err := client.Load()
 	if err != nil {
 		return err
@@ -128,6 +131,7 @@ func run(ctx context.Context, cmd string, args []string) error {
 		fmt.Printf("roots     %s\n", strings.Join(cfg.Roots, ", "))
 		fmt.Printf("synced    %d transcript(s) seen\n", len(cfg.Synced))
 		fmt.Printf("service   %s\n", client.ServiceStatus())
+		fmt.Printf("granola   %s\n", granolaStatus(cfg))
 		return nil
 	case "sync":
 		fs := flag.NewFlagSet("sync", flag.ContinueOnError)
@@ -140,9 +144,12 @@ func run(ctx context.Context, cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
-		if !*quiet || rep.New > 0 || rep.Brain > 0 {
-			fmt.Printf("%s: %d transcript(s), %d session(s) read, %d new on the server, %d skipped, %d entire-brain memories sent\n",
-				time.Now().Format("2006-01-02 15:04"), rep.Files, rep.Sessions, rep.New, rep.Skipped, rep.Brain)
+		if !*quiet || rep.New > 0 || rep.Brain > 0 || rep.Memory > 0 || rep.Granola {
+			fmt.Printf("%s: %d transcript(s), %d session(s) read, %d new on the server, %d skipped, %d entire-brain memories sent, %d Claude Code memory notes sent\n",
+				time.Now().Format("2006-01-02 15:04"), rep.Files, rep.Sessions, rep.New, rep.Skipped, rep.Brain, rep.Memory)
+			if rep.Granola {
+				fmt.Println("Sent a new Granola agent brief.")
+			}
 		}
 		return nil
 	case "daemon":
@@ -154,8 +161,8 @@ func run(ctx context.Context, cmd string, args []string) error {
 		for {
 			if rep, err := client.Sync(ctx, cfg, api, false, logf); err != nil {
 				logf("sync: %v", err)
-			} else if rep.New > 0 || rep.Brain > 0 {
-				logf("sync: %d new session(s), %d brain memories", rep.New, rep.Brain)
+			} else if rep.New > 0 || rep.Brain > 0 || rep.Memory > 0 || rep.Granola {
+				logf("sync: %d new session(s), %d brain memories, %d memory notes, granola brief sent: %v", rep.New, rep.Brain, rep.Memory, rep.Granola)
 			}
 			select {
 			case <-ctx.Done():
@@ -269,10 +276,62 @@ func run(ctx context.Context, cmd string, args []string) error {
 			fmt.Println("No phials match.")
 		}
 		return nil
+	case "granola":
+		sub := ""
+		if len(args) > 0 {
+			sub = args[0]
+		}
+		switch sub {
+		case "login":
+			if err := client.LoginGranola(ctx, cfg); err != nil {
+				return err
+			}
+			fmt.Println("Connected to Granola. Sending the agent brief now...")
+			sent, err := client.SyncGranola(ctx, cfg, api, true)
+			if err != nil {
+				return fmt.Errorf("connected, but the first fetch failed: %w", err)
+			}
+			if sent {
+				fmt.Println("Sent. The server extracts it after its quiet period; new facts appear as phials or in review.")
+			} else {
+				fmt.Println("The brief has not changed since the last one sent.")
+			}
+			fmt.Println("Each sync now checks the brief again, at most every 6 hours.")
+			return nil
+		case "sync":
+			sent, err := client.SyncGranola(ctx, cfg, api, true)
+			if err != nil {
+				return err
+			}
+			if sent {
+				fmt.Println("Sent a new Granola agent brief.")
+			} else {
+				fmt.Println("The brief has not changed since the last one sent.")
+			}
+			return nil
+		case "status":
+			fmt.Println(granolaStatus(cfg))
+			return nil
+		case "logout":
+			cfg.Granola = nil
+			return cfg.Save()
+		}
+		return errors.New("usage: phial-client granola login|status|sync|logout")
 	case "mcp":
 		return client.ServeMCP(ctx, api, version)
 	}
 	return fmt.Errorf("unknown command %q\n\n%s", cmd, usage)
+}
+
+func granolaStatus(cfg *client.Config) string {
+	g := cfg.Granola
+	if !g.Connected() {
+		return "not connected (phial-client granola login)"
+	}
+	if g.LastFetch.IsZero() {
+		return "connected, brief not fetched yet"
+	}
+	return "connected, brief last fetched " + g.LastFetch.Local().Format("2006-01-02 15:04")
 }
 
 type multi []string

@@ -256,6 +256,8 @@ type SyncReport struct {
 	New      int
 	Skipped  int
 	Brain    int
+	Granola  bool // a new agent brief was sent
+	Memory   int  // Claude Code memory notes sent
 }
 
 // Sync uploads every transcript that grew since the last sync, in batches.
@@ -315,6 +317,14 @@ func Sync(ctx context.Context, cfg *Config, api *API, all bool, log func(string,
 	rep.Brain = n
 	if err != nil {
 		log("entire-brain: %v", err)
+	}
+	rep.Memory, err = SyncClaudeMemory(ctx, cfg, api, log)
+	if err != nil {
+		log("claude memory: %v", err)
+	}
+	rep.Granola, err = SyncGranola(ctx, cfg, api, false)
+	if err != nil {
+		log("granola: %v", err)
 	}
 	return rep, cfg.Save()
 }

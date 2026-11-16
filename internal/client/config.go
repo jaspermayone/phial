@@ -36,6 +36,11 @@ type Config struct {
 	Synced map[string]int64 `toml:"synced,omitempty"`
 	// BrainSeen holds entire-brain memory ids already sent.
 	BrainSeen map[string]bool `toml:"brain_seen,omitempty"`
+	// Granola is the Granola connection, when there is one.
+	Granola *Granola `toml:"granola,omitempty"`
+	// MemorySeen maps each Claude Code memory note sent to the hash of the
+	// version sent.
+	MemorySeen map[string]string `toml:"memory_seen,omitempty"`
 }
 
 // Path is the config file.
@@ -53,7 +58,7 @@ func Path() string {
 
 // Load reads the config. A missing file gives an empty config.
 func Load() (*Config, error) {
-	c := &Config{Synced: map[string]int64{}, BrainSeen: map[string]bool{}}
+	c := &Config{Synced: map[string]int64{}, BrainSeen: map[string]bool{}, MemorySeen: map[string]string{}}
 	b, err := os.ReadFile(Path())
 	if errors.Is(err, os.ErrNotExist) {
 		return c, nil
@@ -69,6 +74,9 @@ func Load() (*Config, error) {
 	}
 	if c.BrainSeen == nil {
 		c.BrainSeen = map[string]bool{}
+	}
+	if c.MemorySeen == nil {
+		c.MemorySeen = map[string]string{}
 	}
 	return c, nil
 }

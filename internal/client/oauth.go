@@ -81,16 +81,37 @@ func LoginDevice(ctx context.Context, c *Config) error {
 	if err != nil {
 		return err
 	}
-	if eps.Device == "" {
-		return errors.New("the authorization server does not offer the device grant")
-	}
 	scopes := c.Scopes
 	if len(scopes) == 0 {
 		scopes = DefaultScopes
 	}
 	form := c.clientForm()
+	tok, err := deviceFlow(ctx, eps, form, scopes, strings.TrimRight(c.Server, "/")+"/mcp")
+	if err != nil {
+		return err
+	}
+	c.Auth, c.Issuer = "oauth", issuer
+	c.Scopes = scopes
+	c.setToken(tok)
+	return c.Save()
+}
+
+// deviceFlow runs the device authorization grant (RFC 8628) against eps
+// with the client in form: it prints a link and a code, and polls until
+// the user approves in any browser.
+func deviceFlow(ctx context.Context, eps *endpoints, client url.Values, scopes []string, resource string) (tokenResponse, error) {
+	var none tokenResponse
+	if eps.Device == "" {
+		return none, errors.New("the authorization server does not offer the device grant")
+	}
+	form := url.Values{}
+	for k, v := range client {
+		form[k] = v
+	}
 	form.Set("scope", strings.Join(scopes, " "))
-	form.Set("resource", strings.TrimRight(c.Server, "/")+"/mcp")
+	if resource != "" {
+		form.Set("resource", resource)
+	}
 	var da struct {
 		DeviceCode              string `json:"device_code"`
 		UserCode                string `json:"user_code"`
@@ -102,10 +123,10 @@ func LoginDevice(ctx context.Context, c *Config) error {
 		ErrorDescription        string `json:"error_description"`
 	}
 	if err := postForm(ctx, eps.Device, form, &da); err != nil {
-		return fmt.Errorf("starting authorization: %w", err)
+		return none, fmt.Errorf("starting authorization: %w", err)
 	}
 	if da.DeviceCode == "" {
-		return fmt.Errorf("starting authorization: %s %s", da.Error, da.ErrorDescription)
+		return none, fmt.Errorf("starting authorization: %s %s", da.Error, da.ErrorDescription)
 	}
 	link := da.VerificationURIComplete
 	if link == "" {
@@ -131,13 +152,16 @@ func LoginDevice(ctx context.Context, c *Config) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return none, ctx.Err()
 		case <-time.After(interval):
 		}
 		if time.Now().After(deadline) {
-			return errors.New("this login expired; run login again")
+			return none, errors.New("this login expired; run login again")
 		}
-		form := c.clientForm()
+		form := url.Values{}
+		for k, v := range client {
+			form[k] = v
+		}
 		form.Set("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
 		form.Set("device_code", da.DeviceCode)
 		var tok tokenResponse
@@ -147,21 +171,18 @@ func LoginDevice(ctx context.Context, c *Config) error {
 		switch tok.Error {
 		case "":
 			if tok.AccessToken == "" {
-				return errors.New("the token response had no access token")
+				return none, errors.New("the token response had no access token")
 			}
-			c.Auth, c.Issuer = "oauth", issuer
-			c.Scopes = scopes
-			c.setToken(tok)
-			return c.Save()
+			return tok, nil
 		case "authorization_pending":
 		case "slow_down":
 			interval += 5 * time.Second
 		case "expired_token":
-			return errors.New("this login expired; run login again")
+			return none, errors.New("this login expired; run login again")
 		case "access_denied":
-			return errors.New("authorization was declined")
+			return none, errors.New("authorization was declined")
 		default:
-			return fmt.Errorf("authorization failed: %s %s", tok.Error, tok.ErrorDescription)
+			return none, fmt.Errorf("authorization failed: %s %s", tok.Error, tok.ErrorDescription)
 		}
 	}
 }

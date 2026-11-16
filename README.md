@@ -43,8 +43,43 @@ phial-client sync                 # new sessions since the last sync
 phial-client service install      # sync every 5 minutes (launchd or systemd --user)
 phial-client verify ~/dev/phial   # check this repo's code anchors
 phial-client brief "add a login page"
+phial-client granola login        # connect Granola's agent brief (once per machine)
 claude mcp add --scope user phial-local -- phial-client mcp
 ```
+
+### Granola
+
+`phial-client granola login` connects phial to the agent brief that Granola writes from your
+meetings every morning. It registers phial-client with Granola's authorization server, then runs
+the device-code login. After that, each `sync` (and so the launchd service) reads the brief
+through Granola's MCP server at most every 6 hours. It sends the brief only when the text
+changed.
+
+```mermaid
+flowchart LR
+  granola[Granola MCP<br/>get_agent_brief] -->|every 6h, if changed| client[phial-client sync]
+  client -->|session source granola-brief| server[phial /api/ingest]
+  server --> extract[extraction]
+  extract -->|new| phials[(phials)]
+  extract -->|near an existing phial| review[review queue]
+```
+
+The server reads a brief as Granola's summary, not as your own words. It keeps durable context
+(role, projects, collaborators, glossary, working style) and skips the day's priorities. The
+Granola tokens are in the `[granola]` table of `client.toml`. `phial-client granola logout`
+removes them.
+
+### Claude Code memory
+
+Each `sync` also reads the memory notes that Claude Code saves in
+`~/.claude/projects/<project>/memory/*.md`. It skips `MEMORY.md`, because that file is only an
+index. It sends each new or changed note once: `client.toml` keeps the hash of the version sent
+in `memory_seen`. The notes of one project go up together, as sessions with the source
+`claude-memory`, so the server routes project notes to that repository's area.
+
+All memory directories are read, also those outside `roots`, because each note is a fact that
+was saved on purpose. The server splits a note into one phial per fact. A note that repeats an
+existing phial confirms it.
 
 ## Commands
 
