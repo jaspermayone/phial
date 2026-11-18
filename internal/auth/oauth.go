@@ -160,7 +160,9 @@ func (o *OAuth) Discover(ctx context.Context) (*discovery, error) {
 	o.mu.Unlock()
 	base := strings.TrimRight(o.Issuer, "/")
 	var last error
-	for _, u := range []string{base + "/.well-known/openid-configuration", authServerMetadataURL(o.Issuer)} {
+	// openid-configuration first, then RFC 8414's path, then the old
+	// <issuer>/.well-known path that some servers still use.
+	for _, u := range []string{base + "/.well-known/openid-configuration", authServerMetadataURL(o.Issuer), base + PathAuthServer} {
 		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 		if err != nil {
 			return nil, err
@@ -396,6 +398,10 @@ func (o *OAuth) ProtectedResourceMetadata(w http.ResponseWriter, r *http.Request
 // AuthServerMetadata sends older MCP clients to the authorization server's
 // own metadata. A redirect keeps the issuer check intact.
 func (o *OAuth) AuthServerMetadata(w http.ResponseWriter, r *http.Request) {
+	if strings.TrimSpace(o.Issuer) == "" {
+		http.NotFound(w, r) // a redirect to itself would loop
+		return
+	}
 	http.Redirect(w, r, authServerMetadataURL(o.Issuer), http.StatusFound)
 }
 
@@ -410,7 +416,7 @@ func authServerMetadataURL(issuer string) string {
 	if err != nil || u.Host == "" {
 		return strings.TrimRight(issuer, "/") + PathAuthServer
 	}
-	path := u.Path
+	path := u.EscapedPath()
 	if path == "/" {
 		path = ""
 	}
