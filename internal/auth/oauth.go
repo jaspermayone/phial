@@ -160,7 +160,9 @@ func (o *OAuth) Discover(ctx context.Context) (*discovery, error) {
 	o.mu.Unlock()
 	base := strings.TrimRight(o.Issuer, "/")
 	var last error
-	for _, u := range []string{base + "/.well-known/openid-configuration", base + PathAuthServer} {
+	// openid-configuration first, then RFC 8414's path, then the old
+	// <issuer>/.well-known path that some servers still use.
+	for _, u := range []string{base + "/.well-known/openid-configuration", authServerMetadataURL(o.Issuer), base + PathAuthServer} {
 		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 		if err != nil {
 			return nil, err
@@ -396,7 +398,29 @@ func (o *OAuth) ProtectedResourceMetadata(w http.ResponseWriter, r *http.Request
 // AuthServerMetadata sends older MCP clients to the authorization server's
 // own metadata. A redirect keeps the issuer check intact.
 func (o *OAuth) AuthServerMetadata(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, strings.TrimRight(o.Issuer, "/")+PathAuthServer, http.StatusFound)
+	if strings.TrimSpace(o.Issuer) == "" {
+		http.NotFound(w, r) // a redirect to itself would loop
+		return
+	}
+	http.Redirect(w, r, authServerMetadataURL(o.Issuer), http.StatusFound)
+}
+
+// authServerMetadataURL is where RFC 8414 puts an issuer's metadata: the
+// well-known segment goes between the host and the issuer's path, so
+// https://a.example/application/o/lard/ is described at
+// https://a.example/.well-known/oauth-authorization-server/application/o/lard/.
+// The issuer's path is kept as written, trailing slash included, because
+// Authentik serves the metadata only at that exact path.
+func authServerMetadataURL(issuer string) string {
+	u, err := url.Parse(issuer)
+	if err != nil || u.Host == "" {
+		return strings.TrimRight(issuer, "/") + PathAuthServer
+	}
+	path := u.EscapedPath()
+	if path == "/" {
+		path = ""
+	}
+	return u.Scheme + "://" + u.Host + PathAuthServer + path
 }
 
 // ---- UI sign-in with the authorization code flow and PKCE ----
