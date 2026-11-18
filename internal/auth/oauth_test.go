@@ -57,3 +57,26 @@ func TestIntrospectGivesUpAfterTwoTries(t *testing.T) {
 		t.Fatalf("calls = %d, want 2", n)
 	}
 }
+
+func TestAuthServerMetadataURL(t *testing.T) {
+	for _, c := range []struct{ issuer, want string }{
+		{"https://a.hogwarts.dev/application/o/lard/", "https://a.hogwarts.dev/.well-known/oauth-authorization-server/application/o/lard/"},
+		{"https://a.example/tenant", "https://a.example/.well-known/oauth-authorization-server/tenant"},
+		{"https://a.example/", "https://a.example/.well-known/oauth-authorization-server"},
+		{"https://a.example", "https://a.example/.well-known/oauth-authorization-server"},
+	} {
+		if got := authServerMetadataURL(c.issuer); got != c.want {
+			t.Errorf("authServerMetadataURL(%q) = %q, want %q", c.issuer, got, c.want)
+		}
+	}
+}
+
+func TestAuthServerMetadataRedirect(t *testing.T) {
+	o := &OAuth{Issuer: "https://a.hogwarts.dev/application/o/lard/"}
+	w := httptest.NewRecorder()
+	o.AuthServerMetadata(w, httptest.NewRequest("GET", PathAuthServer, nil))
+	want := "https://a.hogwarts.dev/.well-known/oauth-authorization-server/application/o/lard/"
+	if w.Code != http.StatusFound || w.Header().Get("Location") != want {
+		t.Fatalf("redirect = %d %q, want 302 %q", w.Code, w.Header().Get("Location"), want)
+	}
+}
