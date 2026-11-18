@@ -128,8 +128,17 @@ func (o *OAuth) client() *http.Client {
 	if o.HTTP != nil {
 		return o.HTTP
 	}
-	return &http.Client{Timeout: 10 * time.Second}
+	return &http.Client{Timeout: 10 * time.Second, Transport: outbound}
 }
+
+// outbound drops idle connections before a proxy in front of the
+// authorization server (Cloudflare for Authentik) closes them, so a call after
+// a quiet spell dials a fresh connection instead of using a dead one.
+var outbound = func() http.RoundTripper {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.IdleConnTimeout = 30 * time.Second
+	return t
+}()
 
 type discovery struct {
 	Issuer        string `json:"issuer"`
@@ -347,6 +356,7 @@ func (o *OAuth) introspect(ctx context.Context, tok string) (introspection, bool
 			slog.Warn("auth: introspection failed", "error", err, "attempts", attempt)
 			return introspection{}, false
 		}
+		slog.Info("auth: introspection retry", "error", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
