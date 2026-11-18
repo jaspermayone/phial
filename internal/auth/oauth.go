@@ -128,8 +128,17 @@ func (o *OAuth) client() *http.Client {
 	if o.HTTP != nil {
 		return o.HTTP
 	}
-	return &http.Client{Timeout: 10 * time.Second}
+	return &http.Client{Timeout: 10 * time.Second, Transport: outbound}
 }
+
+// outbound drops idle connections before a proxy in front of the
+// authorization server (Cloudflare for Authentik) closes them, so a call after
+// a quiet spell dials a fresh connection instead of using a dead one.
+var outbound = func() http.RoundTripper {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.IdleConnTimeout = 30 * time.Second
+	return t
+}()
 
 type discovery struct {
 	Issuer        string `json:"issuer"`
@@ -323,20 +332,31 @@ func (o *OAuth) introspect(ctx context.Context, tok string) (introspection, bool
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	form := url.Values{"token": {tok}}
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(form.Encode()))
-	if err != nil {
-		return introspection{}, false
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-	if o.ClientID != "" {
-		req.SetBasicAuth(o.ClientID, o.ClientSecret)
-	}
-	resp, err := o.client().Do(req)
-	if err != nil {
-		slog.Warn("auth: introspection failed", "error", err)
-		return introspection{}, false
+	form := url.Values{"token": {tok}}.Encode()
+	// Introspection only reads, so a second try is safe. The first try can
+	// fail on a pooled connection that the proxy in front of the
+	// authorization server already closed, and the transport does not retry
+	// a POST by itself. A client that calls rarely sees that on every call.
+	var resp *http.Response
+	for attempt := 1; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(form))
+		if err != nil {
+			return introspection{}, false
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Accept", "application/json")
+		if o.ClientID != "" {
+			req.SetBasicAuth(o.ClientID, o.ClientSecret)
+		}
+		resp, err = o.client().Do(req)
+		if err == nil {
+			break
+		}
+		if attempt == 2 || ctx.Err() != nil {
+			slog.Warn("auth: introspection failed", "error", err, "attempts", attempt)
+			return introspection{}, false
+		}
+		slog.Info("auth: introspection retry", "error", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
